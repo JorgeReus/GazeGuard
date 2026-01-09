@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Take a Break</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      background-color: #000000;
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      overflow: hidden;
+    }
+    .message {
+      font-size: 48px;
+      font-weight: 300;
+      margin-bottom: 40px;
+      text-align: center;
+    }
+    .timer {
+      font-size: 120px;
+      font-weight: 200;
+      font-variant-numeric: tabular-nums;
+    }
+    .skip-button {
+      position: absolute;
+      bottom: 40px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      color: white;
+      padding: 12px 30px;
+      border-radius: 6px;
+      font-size: 16px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .skip-button:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+  </style>
+</head>
+<body>
+  <div class="message">Take a Break</div>
+  <div class="timer" id="timer">1:00</div>
+  <button class="skip-button" id="skip">Skip Break</button>
+
+<script>
+  const { invoke } = window.__TAURI__.core;
+
+  let timeLeft = 0;
+  const timerElement = document.getElementById('timer');
+  const skipButton = document.getElementById('skip');
+
+  function formatTime(seconds) {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  async function initBreak() {
+    const info = await invoke('get_next_break_info');
+    timeLeft = info.duration_seconds;
+
+    // Optional: show kind in UI if you want
+    // document.querySelector('.message').textContent =
+    //   info.kind === 'long' ? 'Take a Long Break' : 'Take a Short Break';
+
+    if (info.mandatory) {
+      skipButton.disabled = true;
+      skipButton.style.opacity = '0.4';
+      skipButton.style.cursor = 'not-allowed';
+      skipButton.textContent = 'Mandatory Break';
+    }
+
+    updateTimer();
+  }
+
+  function updateTimer() {
+    timerElement.textContent = formatTime(timeLeft);
+
+    if (timeLeft <= 0) {
+      invoke('complete_break').catch(console.error);
+      return;
+    }
+
+    timeLeft--;
+    setTimeout(updateTimer, 1000);
+  }
+
+  skipButton.addEventListener('click', async () => {
+    try {
+      await invoke('skip_break');
+    } catch (e) {
+      console.error(e);
+      // If mandatory, Rust will reject; UI already disables it, but this is safety.
+    }
+  });
+
+  initBreak().catch(console.error);
+</script>
+</body>
+</html>

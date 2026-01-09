@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GazeGuard</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      padding: 20px;
+      max-width: 400px;
+      margin: 0 auto;
+    }
+    button {
+      width: 100%;
+      padding: 15px;
+      margin: 10px 0;
+      font-size: 16px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    button:active {
+      opacity: 0.7;
+    }
+    .start {
+      background-color: #4CAF50;
+      color: white;
+    }
+    .stop {
+      background-color: #f44336;
+      color: white;
+    }
+    .test {
+      background-color: #2196F3;
+      color: white;
+    }
+    #status {
+      margin-top: 20px;
+      padding: 15px;
+      background-color: #f5f5f5;
+      border-radius: 8px;
+      min-height: 50px;
+    }
+  </style>
+</head>
+<body>
+  <h1>GazeGuard</h1>
+  <p id="tauri-status">Checking Tauri...</p>
+
+  <button class="start" id="startService">Start Break Timer</button>
+  <button class="stop" id="stopService">Stop Break Timer</button>
+  <button class="test" id="testBreak">Test Break Screen</button>
+
+  <div id="status">
+    <strong>Status:</strong> <span id="statusText">Not started</span>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById('statusText');
+    const tauriStatusEl = document.getElementById('tauri-status');
+
+    // Check Tauri availability
+    if (window.__TAURI__) {
+      tauriStatusEl.textContent = '✅ Tauri is available!';
+      tauriStatusEl.style.color = 'green';
+    } else {
+      tauriStatusEl.textContent = '❌ Tauri NOT available!';
+      tauriStatusEl.style.color = 'red';
+    }
+
+    const { invoke } = window.__TAURI__.core;
+
+    // Start service
+    document.getElementById('startService').addEventListener('click', async () => {
+      try {
+        console.log("Bridge ping:", window.AndroidBridge.ping());
+        statusEl.textContent = 'Starting service...';
+        console.log('Calling start_background_service...');
+        window.AndroidBridge.startBreakService();
+        statusEl.textContent = 'Service started! Break timer running.';
+        statusEl.style.color = 'green';
+        console.log('Service started successfully');
+      } catch (error) {
+        statusEl.textContent = `Error: ${error}`;
+        statusEl.style.color = 'red';
+        console.error('Failed to start service:', error);
+      }
+    });
+
+    // Stop service
+    document.getElementById('stopService').addEventListener('click', async () => {
+      try {
+        statusEl.textContent = 'Stopping service...';
+        console.log('Calling stop_background_service...');
+        window.AndroidBridge.stopBreakService();
+        statusEl.textContent = 'Service stopped.';
+        statusEl.style.color = 'orange';
+        console.log('Service stopped successfully');
+      } catch (error) {
+        statusEl.textContent = `Error: ${error}`;
+        statusEl.style.color = 'red';
+        console.error('Failed to stop service:', error);
+      }
+    });
+
+    // Test break screen
+    document.getElementById('testBreak').addEventListener('click', async () => {
+      try {
+        statusEl.textContent = 'Showing break screen...';
+        await invoke('show_break_window');
+      } catch (error) {
+        statusEl.textContent = `Error: ${error}`;
+        statusEl.style.color = 'red';
+        console.error('Failed to show break:', error);
+      }
+    });
+  </script>
+</body>
+</html>
+        window.__TAURI_INTERNALS__.plugins &&
+        window.__TAURI_INTERNALS__.plugins.os) {
+      // Check if on mobile
+      window.__TAURI_INTERNALS__.plugins.os.platform().then(platform => {
+        if (platform === 'android' || platform === 'ios') {
+          statusEl.textContent = 'Mobile detected. Tap "Start Break Timer" to begin.';
+        }
+      });
+    }
+  </script>
+</body>
+</html>

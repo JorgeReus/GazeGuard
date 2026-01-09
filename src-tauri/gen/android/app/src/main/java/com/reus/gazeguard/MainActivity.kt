@@ -1,0 +1,168 @@
+package com.reus.gazeguard
+
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
+import android.os.Bundle
+import android.util.Log
+import android.view.View
+import android.view.ViewGroup
+import android.webkit.JavascriptInterface
+import android.webkit.WebView
+
+class MainActivity : TauriActivity() {
+    private var breakReceiver: BreakReceiver? = null
+    private val TAG = "MainActivity"
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        Log.d(TAG, "onCreate")
+
+        // Register broadcast receiver
+        breakReceiver = BreakReceiver()
+        val filter = IntentFilter(BreakReminderService.ACTION_TRIGGER_BREAK)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(breakReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(breakReceiver, filter)
+        }
+
+        // Inject AndroidBridge once the WebView actually exists
+        ensureAndroidBridgeInjected()
+
+        // Check if we should show break screen
+        if (intent.getBooleanExtra("show_break", false)) {
+            showBreakScreen()
+        }
+    }
+
+    // ----- WebView lookup (robust) -----
+
+    private fun findWebView(root: View?): WebView? {
+        return when (root) {
+            null -> null
+            is WebView -> root
+            is ViewGroup -> {
+                for (i in 0 until root.childCount) {
+                    val found = findWebView(root.getChildAt(i))
+                    if (found != null) return found
+                }
+                null
+            }
+            else -> null
+        }
+    }
+
+
+    private fun getWebView(): WebView? {
+        return try {
+            val content = findViewById<View>(android.R.id.content)
+            findWebView(content)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to locate WebView", e)
+            null
+        }
+    }
+
+    private fun ensureAndroidBridgeInjected(attempt: Int = 0) {
+        val webView = getWebView()
+        if (webView != null) {
+            try {
+                webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
+                Log.d(TAG, "AndroidBridge injected into WebView")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to inject AndroidBridge", e)
+            }
+            return
+        }
+
+        if (attempt < 50) {
+            // Retry for ~5 seconds total
+            window.decorView.postDelayed({ ensureAndroidBridgeInjected(attempt + 1) }, 100)
+        } else {
+            Log.e(TAG, "Failed to inject AndroidBridge: WebView never appeared")
+        }
+    }
+
+    // ----- JS bridge -----
+
+    inner class AndroidBridge {
+          @JavascriptInterface
+          fun ping(): String {
+            Log.d(TAG, "ping() called from JS")
+            return "pong"
+          }
+
+        @JavascriptInterface
+        fun startBreakService() {
+            Log.d(TAG, "startBreakService called from JavaScript")
+            startBreakServiceInternal()
+        }
+
+        @JavascriptInterface
+        fun stopBreakService() {
+            Log.d(TAG, "stopBreakService called from JavaScript")
+            stopBreakServiceInternal()
+        }
+    }
+
+    private fun startBreakServiceInternal() {
+        runOnUiThread {
+            Log.d(TAG, "Starting break service")
+            val intent = Intent(this, BreakReminderService::class.java).apply {
+                action = BreakReminderService.ACTION_START
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        }
+    }
+
+    private fun stopBreakServiceInternal() {
+        runOnUiThread {
+            Log.d(TAG, "Stopping break service")
+            val intent = Intent(this, BreakReminderService::class.java).apply {
+                action = BreakReminderService.ACTION_STOP
+            }
+            startService(intent)
+        }
+    }
+
+    // ----- lifecycle -----
+
+    override fun onDestroy() {
+        super.onDestroy()
+        breakReceiver?.let { unregisterReceiver(it) }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+
+        if (intent.getBooleanExtra("show_break", false)) {
+            showBreakScreen()
+        }
+    }
+
+    private fun showBreakScreen(attempt: Int = 0) {
+        Log.d(TAG, "showBreakScreen called (attempt=$attempt)")
+        runOnUiThread {
+            val webView = getWebView()
+            if (webView != null) {
+                val script = "window.location.href = 'break.html';"
+                webView.evaluateJavascript(script, null)
+                Log.d(TAG, "Navigated to break.html")
+                return@runOnUiThread
+            }
+
+            if (attempt < 50) {
+                window.decorView.postDelayed({ showBreakScreen(attempt + 1) }, 100)
+            } else {
+                Log.e(TAG, "Failed to show break screen: WebView not found")
+            }
+        }
+    }
+}
