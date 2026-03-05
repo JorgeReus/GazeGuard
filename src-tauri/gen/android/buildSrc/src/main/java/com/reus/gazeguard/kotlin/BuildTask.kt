@@ -5,8 +5,12 @@ import org.gradle.api.GradleException
 import org.gradle.api.logging.LogLevel
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.TaskAction
+import org.gradle.process.ExecOperations
+import javax.inject.Inject
 
-open class BuildTask : DefaultTask() {
+open class BuildTask @Inject constructor(
+    private val execOperations: ExecOperations,
+) : DefaultTask() {
     @Input
     var rootDirRel: String? = null
     @Input
@@ -44,16 +48,16 @@ open class BuildTask : DefaultTask() {
         }
     }
 
-    fun runTauriCli(executable: String) {
+    fun runTauriCli(execBinary: String) {
         val rootDirRel = rootDirRel ?: throw GradleException("rootDirRel cannot be null")
         val target = target ?: throw GradleException("target cannot be null")
         val release = release ?: throw GradleException("release cannot be null")
-        val args = listOf("tauri", "android", "android-studio-script");
+        val argList = listOf("tauri", "android", "android-studio-script");
 
-        project.exec {
-            workingDir(File(project.projectDir, rootDirRel))
-            executable(executable)
-            args(args)
+        execOperations.exec {
+            workingDir = File(project.projectDir, rootDirRel)
+            executable = execBinary
+            args(argList)
             if (project.logger.isEnabled(LogLevel.DEBUG)) {
                 args("-vv")
             } else if (project.logger.isEnabled(LogLevel.INFO)) {
