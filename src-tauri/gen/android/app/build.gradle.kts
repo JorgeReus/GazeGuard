@@ -14,6 +14,7 @@ val tauriProperties = Properties().apply {
 }
 
 android {
+    buildToolsVersion = "36.1.0"
     compileSdk = 36
     namespace = "com.reus.gazeguard"
     defaultConfig {

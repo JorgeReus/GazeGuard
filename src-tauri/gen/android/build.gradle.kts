@@ -1,3 +1,6 @@
+import com.android.build.api.dsl.ApplicationExtension
+import com.android.build.api.dsl.LibraryExtension
+
 buildscript {
     repositories {
         google()
@@ -16,7 +19,19 @@ allprojects {
     }
 }
 
+subprojects {
+    plugins.withId("com.android.application") {
+        extensions.configure<ApplicationExtension>("android") {
+            buildToolsVersion = "36.1.0"
+        }
+    }
+    plugins.withId("com.android.library") {
+        extensions.configure<LibraryExtension>("android") {
+            buildToolsVersion = "36.1.0"
+        }
+    }
+}
+
 tasks.register("clean").configure {
     delete("build")
 }
-
