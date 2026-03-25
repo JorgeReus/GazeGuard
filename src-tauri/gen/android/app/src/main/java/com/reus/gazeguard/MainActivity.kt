@@ -9,6 +9,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : TauriActivity() {
     private var breakReceiver: BreakReceiver? = null
@@ -88,11 +91,11 @@ class MainActivity : TauriActivity() {
     // ----- JS bridge -----
 
     inner class AndroidBridge {
-          @JavascriptInterface
-          fun ping(): String {
+        @JavascriptInterface
+        fun ping(): String {
             Log.d(TAG, "ping() called from JS")
             return "pong"
-          }
+        }
 
         @JavascriptInterface
         fun startBreakService() {
@@ -104,6 +107,16 @@ class MainActivity : TauriActivity() {
         fun stopBreakService() {
             Log.d(TAG, "stopBreakService called from JavaScript")
             stopBreakServiceInternal()
+        }
+
+        @JavascriptInterface
+        fun enterImmersiveMode() {
+            setImmersiveMode(true)
+        }
+
+        @JavascriptInterface
+        fun exitImmersiveMode() {
+            setImmersiveMode(false)
         }
     }
 
@@ -162,6 +175,21 @@ class MainActivity : TauriActivity() {
                 window.decorView.postDelayed({ showBreakScreen(attempt + 1) }, 100)
             } else {
                 Log.e(TAG, "Failed to show break screen: WebView not found")
+            }
+        }
+    }
+
+    private fun setImmersiveMode(enabled: Boolean) {
+        runOnUiThread {
+            WindowCompat.setDecorFitsSystemWindows(window, !enabled)
+
+            val controller = WindowInsetsControllerCompat(window, window.decorView)
+            if (enabled) {
+                controller.systemBarsBehavior =
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                controller.hide(WindowInsetsCompat.Type.systemBars())
+            } else {
+                controller.show(WindowInsetsCompat.Type.systemBars())
             }
         }
     }

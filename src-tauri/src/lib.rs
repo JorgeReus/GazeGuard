@@ -189,6 +189,7 @@ fn show_break_window(app: tauri::AppHandle) -> Result<(), String> {
         .title("Take a Break")
         .inner_size(size.width as f64, size.height as f64)
         .position(position.x as f64, position.y as f64)
+        .fullscreen(true)
         .always_on_top(true)
         .decorations(false)
         .resizable(false)
