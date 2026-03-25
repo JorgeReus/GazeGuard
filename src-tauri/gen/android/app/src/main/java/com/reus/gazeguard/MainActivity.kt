@@ -5,8 +5,6 @@ import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
-import android.view.View
-import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.core.view.WindowCompat
@@ -15,6 +13,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : TauriActivity() {
     private var breakReceiver: BreakReceiver? = null
+    private var webView: WebView? = null
     private val TAG = "MainActivity"
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -31,60 +30,20 @@ class MainActivity : TauriActivity() {
             registerReceiver(breakReceiver, filter)
         }
 
-        // Inject AndroidBridge once the WebView actually exists
-        ensureAndroidBridgeInjected()
-
         // Check if we should show break screen
         if (intent.getBooleanExtra("show_break", false)) {
             showBreakScreen()
         }
     }
 
-    // ----- WebView lookup (robust) -----
-
-    private fun findWebView(root: View?): WebView? {
-        return when (root) {
-            null -> null
-            is WebView -> root
-            is ViewGroup -> {
-                for (i in 0 until root.childCount) {
-                    val found = findWebView(root.getChildAt(i))
-                    if (found != null) return found
-                }
-                null
-            }
-            else -> null
-        }
-    }
-
-
-    private fun getWebView(): WebView? {
-        return try {
-            val content = findViewById<View>(android.R.id.content)
-            findWebView(content)
+    override fun onWebViewCreate(webView: WebView) {
+        super.onWebViewCreate(webView)
+        this.webView = webView
+        try {
+            webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
+            Log.d(TAG, "AndroidBridge injected into WebView")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to locate WebView", e)
-            null
-        }
-    }
-
-    private fun ensureAndroidBridgeInjected(attempt: Int = 0) {
-        val webView = getWebView()
-        if (webView != null) {
-            try {
-                webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
-                Log.d(TAG, "AndroidBridge injected into WebView")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to inject AndroidBridge", e)
-            }
-            return
-        }
-
-        if (attempt < 50) {
-            // Retry for ~5 seconds total
-            window.decorView.postDelayed({ ensureAndroidBridgeInjected(attempt + 1) }, 100)
-        } else {
-            Log.e(TAG, "Failed to inject AndroidBridge: WebView never appeared")
+            Log.e(TAG, "Failed to inject AndroidBridge", e)
         }
     }
 
@@ -163,10 +122,10 @@ class MainActivity : TauriActivity() {
     private fun showBreakScreen(attempt: Int = 0) {
         Log.d(TAG, "showBreakScreen called (attempt=$attempt)")
         runOnUiThread {
-            val webView = getWebView()
-            if (webView != null) {
+            val currentWebView = webView
+            if (currentWebView != null) {
                 val script = "window.location.href = 'break.html';"
-                webView.evaluateJavascript(script, null)
+                currentWebView.evaluateJavascript(script, null)
                 Log.d(TAG, "Navigated to break.html")
                 return@runOnUiThread
             }

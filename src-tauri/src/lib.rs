@@ -2,7 +2,7 @@
 
 use tauri::Manager;
 use std::sync::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 #[cfg(desktop)]
@@ -22,12 +22,18 @@ struct BreakInfo {
     mandatory: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct BreakSchedule {
+    break_interval_minutes: u64,
+}
+
 #[derive(Debug)]
 struct BreakConfig {
     skip_limit: u8,            // 2
-    short_duration_seconds: u64, // e.g. 20
-    long_duration_seconds: u64,  // e.g. 300
-    long_every_n_shorts: u8,     // N (default 3)
+    short_duration_seconds: u64,
+    long_duration_seconds: u64,
+    long_every_n_shorts: u8,
+    break_interval_minutes: u64,
 }
 
 #[derive(Debug)]
@@ -41,13 +47,9 @@ struct BreakState {
 
 impl BreakState {
     fn new() -> Self {
+        let safe_eyes = SafeEyesConfig::load();
         Self {
-            config: BreakConfig {
-                skip_limit: 2,
-                short_duration_seconds: 20,
-                long_duration_seconds: 300,
-                long_every_n_shorts: 3, // <-- N default; change if you want
-            },
+            config: BreakConfig::from_safe_eyes(&safe_eyes),
             skip_streak: 0,
             shorts_since_long: 0,
             current: None,
@@ -86,10 +88,78 @@ impl BreakState {
     }
 }
 
+impl BreakConfig {
+    fn from_safe_eyes(config: &SafeEyesConfig) -> Self {
+        Self {
+            skip_limit: if config.strict_break { 0 } else { 2 },
+            short_duration_seconds: config.short_break_duration,
+            long_duration_seconds: config.long_break_duration,
+            long_every_n_shorts: config.no_of_short_breaks_per_long_break,
+            break_interval_minutes: config.break_interval,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SafeEyesConfig {
+    break_interval: u64,
+    long_break_duration: u64,
+    no_of_short_breaks_per_long_break: u8,
+    short_break_duration: u64,
+    strict_break: bool,
+}
+
+impl SafeEyesConfig {
+    fn load() -> Self {
+        serde_json::from_str(include_str!("../gen/android/app/src/main/assets/config/safeeyes.json"))
+            .expect("safeeyes config should be valid JSON")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BreakConfig, BreakKind, BreakState, SafeEyesConfig};
+
+    #[test]
+    fn loads_safe_eyes_json_shape() {
+        let config = SafeEyesConfig::load();
+        let break_config = BreakConfig::from_safe_eyes(&config);
+
+        assert_eq!(config.break_interval, 15);
+        assert_eq!(break_config.break_interval_minutes, 15);
+        assert_eq!(break_config.short_duration_seconds, 15);
+        assert_eq!(break_config.long_duration_seconds, 60);
+        assert_eq!(break_config.long_every_n_shorts, 5);
+    }
+
+    #[test]
+    fn uses_safe_eyes_break_distribution() {
+        let mut state = BreakState::new();
+
+        for index in 1..=5 {
+            let info = state.compute_next_break();
+            assert!(matches!(info.kind, BreakKind::Short), "break {index} should be short");
+            assert_eq!(info.duration_seconds, 15, "break {index} should last 15 seconds");
+        }
+
+        let info = state.compute_next_break();
+        assert!(matches!(info.kind, BreakKind::Long), "6th break should be long");
+        assert_eq!(info.duration_seconds, 60, "long break should last 60 seconds");
+    }
+}
+
 #[tauri::command]
 fn get_next_break_info(state: State<'_, Mutex<BreakState>>) -> Result<BreakInfo, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
     Ok(guard.compute_next_break())
+}
+
+#[tauri::command]
+fn get_break_schedule(state: State<'_, Mutex<BreakState>>) -> Result<BreakSchedule, String> {
+    let guard = state.lock().map_err(|_| "State lock poisoned")?;
+    Ok(BreakSchedule {
+        break_interval_minutes: guard.config.break_interval_minutes,
+    })
 }
 
 #[tauri::command]
@@ -303,6 +373,7 @@ pub fn run() {
             close_break_window,
             start_background_service,
             stop_background_service,
+            get_break_schedule,
             get_next_break_info,
             skip_break,
             complete_break

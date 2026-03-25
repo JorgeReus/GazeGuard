@@ -12,6 +12,7 @@ import kotlin.concurrent.timer
 
 class BreakReminderService : Service() {
     private var timer: Timer? = null
+    private var breakIntervalMillis = 15 * 60 * 1000L
     private val CHANNEL_ID = "BreakReminderChannel"
     private val NOTIFICATION_ID = 1
     private val TAG = "BreakReminderService"
@@ -20,13 +21,12 @@ class BreakReminderService : Service() {
         const val ACTION_START = "START_SERVICE"
         const val ACTION_STOP = "STOP_SERVICE"
         const val ACTION_TRIGGER_BREAK = "com.reus.gazeguard.TRIGGER_BREAK"
-
-        private const val BREAK_INTERVAL = 60 * 1000L // 1 minute for testing
     }
 
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "Service onCreate")
+        breakIntervalMillis = SafeEyesConfig.loadBreakIntervalMillis(this)
         createNotificationChannel()
     }
 
@@ -54,9 +54,9 @@ class BreakReminderService : Service() {
     }
 
     private fun startBreakTimer() {
-        Log.d(TAG, "Starting break timer with interval: $BREAK_INTERVAL ms")
+        Log.d(TAG, "Starting break timer with interval: $breakIntervalMillis ms")
         stopBreakTimer()
-        timer = timer(period = BREAK_INTERVAL, initialDelay = BREAK_INTERVAL) {
+        timer = timer(period = breakIntervalMillis, initialDelay = breakIntervalMillis) {
             Log.d(TAG, "Timer triggered - calling triggerBreak()")
             triggerBreak()
         }

@@ -60,6 +60,7 @@
   <script>
     const statusEl = document.getElementById('statusText');
     const tauriStatusEl = document.getElementById('tauri-status');
+    let desktopTimerId = null;
 
     if (window.AndroidBridge?.exitImmersiveMode) {
       window.AndroidBridge.exitImmersiveMode();
@@ -76,14 +77,57 @@
 
     const { invoke } = window.__TAURI__.core;
 
+    function isAndroidBridgeAvailable() {
+      return Boolean(window.AndroidBridge?.startBreakService && window.AndroidBridge?.stopBreakService);
+    }
+
+    function stopDesktopTimer() {
+      if (desktopTimerId !== null) {
+        clearInterval(desktopTimerId);
+        desktopTimerId = null;
+      }
+    }
+
+    async function waitForAndroidBridge(timeoutMs = 2000) {
+      const deadline = Date.now() + timeoutMs;
+
+      while (Date.now() < deadline) {
+        if (window.AndroidBridge?.startBreakService && window.AndroidBridge?.stopBreakService) {
+          return window.AndroidBridge;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      throw new Error('Android bridge is unavailable. Background service only works on Android after the bridge loads.');
+    }
+
     // Start service
     document.getElementById('startService').addEventListener('click', async () => {
       try {
-        console.log("Bridge ping:", window.AndroidBridge.ping());
         statusEl.textContent = 'Starting service...';
-        console.log('Calling start_background_service...');
-        window.AndroidBridge.startBreakService();
-        statusEl.textContent = 'Service started! Break timer running.';
+
+        if (isAndroidBridgeAvailable()) {
+          const bridge = await waitForAndroidBridge();
+          console.log("Bridge ping:", bridge.ping?.());
+          bridge.startBreakService();
+          statusEl.textContent = 'Service started! Break timer running.';
+        } else {
+          const schedule = await invoke('get_break_schedule');
+          const intervalMs = schedule.break_interval_minutes * 60 * 1000;
+
+          stopDesktopTimer();
+          desktopTimerId = setInterval(async () => {
+            try {
+              await invoke('show_break_window');
+            } catch (error) {
+              console.error('Failed to show scheduled desktop break:', error);
+            }
+          }, intervalMs);
+
+          statusEl.textContent = `Desktop timer started. Next break in ${schedule.break_interval_minutes} minutes.`;
+        }
+
         statusEl.style.color = 'green';
         console.log('Service started successfully');
       } catch (error) {
@@ -97,9 +141,16 @@
     document.getElementById('stopService').addEventListener('click', async () => {
       try {
         statusEl.textContent = 'Stopping service...';
-        console.log('Calling stop_background_service...');
-        window.AndroidBridge.stopBreakService();
-        statusEl.textContent = 'Service stopped.';
+
+        if (isAndroidBridgeAvailable()) {
+          const bridge = await waitForAndroidBridge();
+          bridge.stopBreakService();
+          statusEl.textContent = 'Service stopped.';
+        } else {
+          stopDesktopTimer();
+          statusEl.textContent = 'Desktop timer stopped.';
+        }
+
         statusEl.style.color = 'orange';
         console.log('Service stopped successfully');
       } catch (error) {
