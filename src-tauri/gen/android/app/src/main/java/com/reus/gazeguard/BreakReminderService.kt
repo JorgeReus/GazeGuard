@@ -8,11 +8,12 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import java.util.Timer
-import kotlin.concurrent.timer
+import kotlin.concurrent.schedule
 
 class BreakReminderService : Service() {
     private var timer: Timer? = null
     private var breakIntervalMillis = 15 * 60 * 1000L
+    private var preBreakWarningMillis = 0L
     private val CHANNEL_ID = "BreakReminderChannel"
     private val NOTIFICATION_ID = 1
     private val TAG = "BreakReminderService"
@@ -26,7 +27,9 @@ class BreakReminderService : Service() {
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "Service onCreate")
-        breakIntervalMillis = SafeEyesConfig.loadBreakIntervalMillis(this)
+        val schedule = BreakEngineConfig.loadSchedule(this)
+        breakIntervalMillis = schedule.breakIntervalMillis
+        preBreakWarningMillis = schedule.preBreakWarningMillis
         createNotificationChannel()
     }
 
@@ -56,16 +59,32 @@ class BreakReminderService : Service() {
     private fun startBreakTimer() {
         Log.d(TAG, "Starting break timer with interval: $breakIntervalMillis ms")
         stopBreakTimer()
-        timer = timer(period = breakIntervalMillis, initialDelay = breakIntervalMillis) {
-            Log.d(TAG, "Timer triggered - calling triggerBreak()")
-            triggerBreak()
-        }
+        timer = Timer("break-reminder-cycle", true)
+        scheduleNextCycle()
     }
 
     private fun stopBreakTimer() {
         Log.d(TAG, "Stopping break timer")
         timer?.cancel()
         timer = null
+    }
+
+    private fun scheduleNextCycle() {
+        val cycleTimer = timer ?: return
+        val warningDelay = (breakIntervalMillis - preBreakWarningMillis).coerceAtLeast(0L)
+
+        if (preBreakWarningMillis > 0L && warningDelay > 0L) {
+            cycleTimer.schedule(warningDelay) {
+                Log.d(TAG, "Warning timer triggered")
+                showWarningNotification()
+            }
+        }
+
+        cycleTimer.schedule(breakIntervalMillis) {
+            Log.d(TAG, "Break timer triggered")
+            triggerBreak()
+            scheduleNextCycle()
+        }
     }
 
     private fun triggerBreak() {
@@ -80,6 +99,17 @@ class BreakReminderService : Service() {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(NOTIFICATION_ID + 1, notification)
         Log.d(TAG, "Break notification shown")
+    }
+
+    private fun showWarningNotification() {
+        val text = if (preBreakWarningMillis >= 1000L) {
+            "Break starts in ${preBreakWarningMillis / 1000L} seconds"
+        } else {
+            "Break is coming up"
+        }
+        val notification = createNotification(text)
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.notify(NOTIFICATION_ID + 2, notification)
     }
 
     private fun createNotification(text: String, isBreakNotification: Boolean = false): Notification {

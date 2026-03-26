@@ -50,16 +50,18 @@
   </style>
 </head>
 <body>
-  <div class="message">Take a Break</div>
-  <div class="timer" id="timer">1:00</div>
+  <div class="message" id="message">Take a Break</div>
+  <div class="timer" id="timer">0:00</div>
   <button class="skip-button" id="skip">Skip Break</button>
 
 <script>
   const { invoke } = window.__TAURI__.core;
 
-  let timeLeft = 0;
   const timerElement = document.getElementById('timer');
   const skipButton = document.getElementById('skip');
+  const messageElement = document.getElementById('message');
+  let timerId = null;
+  let timeLeft = 0;
 
   if (window.AndroidBridge?.enterImmersiveMode) {
     window.AndroidBridge.enterImmersiveMode();
@@ -71,22 +73,26 @@
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   }
 
-  async function initBreak() {
-    const info = await invoke('get_next_break_info');
-    timeLeft = info.duration_seconds;
+  function labelFromTemplate(name) {
+    return name
+      .split('_')
+      .slice(2)
+      .join(' ')
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  }
 
-    // Optional: show kind in UI if you want
-    // document.querySelector('.message').textContent =
-    //   info.kind === 'long' ? 'Take a Long Break' : 'Take a Short Break';
-
-    if (info.mandatory) {
+  function setSkipState(canSkip) {
+    if (!canSkip) {
       skipButton.disabled = true;
       skipButton.style.opacity = '0.4';
       skipButton.style.cursor = 'not-allowed';
       skipButton.textContent = 'Mandatory Break';
+    } else {
+      skipButton.disabled = false;
+      skipButton.style.opacity = '1';
+      skipButton.style.cursor = 'pointer';
+      skipButton.textContent = 'Skip Break';
     }
-
-    updateTimer();
   }
 
   function updateTimer() {
@@ -97,12 +103,26 @@
       return;
     }
 
-    timeLeft--;
-    setTimeout(updateTimer, 1000);
+    timeLeft -= 1;
+    timerId = setTimeout(updateTimer, 1000);
+  }
+
+  async function initBreak() {
+    const info = await invoke('get_current_break_info');
+    timeLeft = info.duration_seconds;
+    messageElement.textContent = info.template_name
+      ? labelFromTemplate(info.template_name)
+      : (info.kind === 'long' ? 'Take a Long Break' : 'Take a Short Break');
+    setSkipState(!info.mandatory);
+    updateTimer();
   }
 
   skipButton.addEventListener('click', async () => {
     try {
+      if (timerId !== null) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
       await invoke('skip_break');
     } catch (e) {
       console.error(e);

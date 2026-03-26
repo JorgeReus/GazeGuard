@@ -2,6 +2,7 @@ package com.reus.gazeguard
 
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -19,6 +20,7 @@ class MainActivity : TauriActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.d(TAG, "onCreate")
+        setImmersiveMode(false)
 
         // Register broadcast receiver
         breakReceiver = BreakReceiver()
@@ -42,6 +44,7 @@ class MainActivity : TauriActivity() {
         try {
             webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
             Log.d(TAG, "AndroidBridge injected into WebView")
+            syncBreakEngineSignals()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to inject AndroidBridge", e)
         }
@@ -110,12 +113,25 @@ class MainActivity : TauriActivity() {
         breakReceiver?.let { unregisterReceiver(it) }
     }
 
+    override fun onResume() {
+        super.onResume()
+        setImmersiveMode(false)
+        notifyBreakEngine(BreakEngineSignals.setIdleActiveScript(false))
+    }
+
+    override fun onPause() {
+        notifyBreakEngine(BreakEngineSignals.setIdleActiveScript(true))
+        super.onPause()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
 
         if (intent.getBooleanExtra("show_break", false)) {
             showBreakScreen()
+        } else {
+            setImmersiveMode(false)
         }
     }
 
@@ -138,6 +154,17 @@ class MainActivity : TauriActivity() {
         }
     }
 
+    private fun syncBreakEngineSignals() {
+        notifyBreakEngine(BreakEngineSignals.setIdleActiveScript(false))
+        notifyBreakEngine(BreakEngineSignals.setFullscreenActiveScript(false))
+    }
+
+    private fun notifyBreakEngine(script: String) {
+        runOnUiThread {
+            webView?.evaluateJavascript(script, null)
+        }
+    }
+
     private fun setImmersiveMode(enabled: Boolean) {
         runOnUiThread {
             WindowCompat.setDecorFitsSystemWindows(window, !enabled)
@@ -146,10 +173,18 @@ class MainActivity : TauriActivity() {
             if (enabled) {
                 controller.systemBarsBehavior =
                     WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                controller.isAppearanceLightStatusBars = false
+                controller.isAppearanceLightNavigationBars = false
                 controller.hide(WindowInsetsCompat.Type.systemBars())
             } else {
+                window.statusBarColor = Color.WHITE
+                window.navigationBarColor = Color.WHITE
+                controller.isAppearanceLightStatusBars = true
+                controller.isAppearanceLightNavigationBars = true
                 controller.show(WindowInsetsCompat.Type.systemBars())
             }
+
+            notifyBreakEngine(BreakEngineSignals.setFullscreenActiveScript(enabled))
         }
     }
 }

@@ -1,185 +1,126 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tauri::Manager;
+mod break_engine;
+
+use serde::Serialize;
 use std::sync::Mutex;
-use serde::{Deserialize, Serialize};
+use break_engine::{BreakEngine, BreakEngineConfig, BreakInfo, DisableOption, EngineStatus};
+use tauri::Manager;
 use tauri::State;
 
 #[cfg(desktop)]
 use tauri::{menu::{Menu, MenuItem}, tray::TrayIconBuilder};
 
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "lowercase")]
-enum BreakKind {
-    Short,
-    Long,
-}
-
-#[derive(Debug, Serialize)]
-struct BreakInfo {
-    kind: BreakKind,
-    duration_seconds: u64,
-    mandatory: bool,
-}
-
 #[derive(Debug, Serialize)]
 struct BreakSchedule {
     break_interval_minutes: u64,
-}
-
-#[derive(Debug)]
-struct BreakConfig {
-    skip_limit: u8,            // 2
-    short_duration_seconds: u64,
-    long_duration_seconds: u64,
-    long_every_n_shorts: u8,
-    break_interval_minutes: u64,
-}
-
-#[derive(Debug)]
-struct BreakState {
-    config: BreakConfig,
-    skip_streak: u8,
-    shorts_since_long: u8,
-    // optional: remember what break is currently being shown
-    current: Option<BreakInfo>,
-}
-
-impl BreakState {
-    fn new() -> Self {
-        let safe_eyes = SafeEyesConfig::load();
-        Self {
-            config: BreakConfig::from_safe_eyes(&safe_eyes),
-            skip_streak: 0,
-            shorts_since_long: 0,
-            current: None,
-        }
-    }
-
-    fn compute_next_break(&mut self) -> BreakInfo {
-        let mandatory = self.skip_streak >= self.config.skip_limit;
-
-        let kind = if self.shorts_since_long >= self.config.long_every_n_shorts {
-            self.shorts_since_long = 0;
-            BreakKind::Long
-        } else {
-            self.shorts_since_long += 1;
-            BreakKind::Short
-        };
-
-        let duration_seconds = match kind {
-            BreakKind::Short => self.config.short_duration_seconds,
-            BreakKind::Long => self.config.long_duration_seconds,
-        };
-
-        let info = BreakInfo {
-            kind,
-            duration_seconds,
-            mandatory,
-        };
-
-        self.current = Some(BreakInfo {
-            kind: info.kind,
-            duration_seconds: info.duration_seconds,
-            mandatory: info.mandatory,
-        });
-
-        info
-    }
-}
-
-impl BreakConfig {
-    fn from_safe_eyes(config: &SafeEyesConfig) -> Self {
-        Self {
-            skip_limit: if config.strict_break { 0 } else { 2 },
-            short_duration_seconds: config.short_break_duration,
-            long_duration_seconds: config.long_break_duration,
-            long_every_n_shorts: config.no_of_short_breaks_per_long_break,
-            break_interval_minutes: config.break_interval,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct SafeEyesConfig {
-    break_interval: u64,
-    long_break_duration: u64,
-    no_of_short_breaks_per_long_break: u8,
-    short_break_duration: u64,
-    strict_break: bool,
-}
-
-impl SafeEyesConfig {
-    fn load() -> Self {
-        serde_json::from_str(include_str!("../gen/android/app/src/main/assets/config/safeeyes.json"))
-            .expect("safeeyes config should be valid JSON")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{BreakConfig, BreakKind, BreakState, SafeEyesConfig};
-
-    #[test]
-    fn loads_safe_eyes_json_shape() {
-        let config = SafeEyesConfig::load();
-        let break_config = BreakConfig::from_safe_eyes(&config);
-
-        assert_eq!(config.break_interval, 15);
-        assert_eq!(break_config.break_interval_minutes, 15);
-        assert_eq!(break_config.short_duration_seconds, 15);
-        assert_eq!(break_config.long_duration_seconds, 60);
-        assert_eq!(break_config.long_every_n_shorts, 5);
-    }
-
-    #[test]
-    fn uses_safe_eyes_break_distribution() {
-        let mut state = BreakState::new();
-
-        for index in 1..=5 {
-            let info = state.compute_next_break();
-            assert!(matches!(info.kind, BreakKind::Short), "break {index} should be short");
-            assert_eq!(info.duration_seconds, 15, "break {index} should last 15 seconds");
-        }
-
-        let info = state.compute_next_break();
-        assert!(matches!(info.kind, BreakKind::Long), "6th break should be long");
-        assert_eq!(info.duration_seconds, 60, "long break should last 60 seconds");
-    }
+    pre_break_warning_seconds: u64,
+    disable_options: Vec<DisableOption>,
 }
 
 #[tauri::command]
-fn get_next_break_info(state: State<'_, Mutex<BreakState>>) -> Result<BreakInfo, String> {
+fn start_break_timer(state: State<'_, Mutex<BreakEngine>>) -> Result<EngineStatus, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
-    Ok(guard.compute_next_break())
+    Ok(guard.start())
 }
 
 #[tauri::command]
-fn get_break_schedule(state: State<'_, Mutex<BreakState>>) -> Result<BreakSchedule, String> {
+fn stop_break_timer(state: State<'_, Mutex<BreakEngine>>) -> Result<EngineStatus, String> {
+    let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
+    Ok(guard.stop())
+}
+
+#[tauri::command]
+fn get_engine_status(state: State<'_, Mutex<BreakEngine>>) -> Result<EngineStatus, String> {
+    let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
+    Ok(guard.status())
+}
+
+#[tauri::command]
+fn get_break_schedule(state: State<'_, Mutex<BreakEngine>>) -> Result<BreakSchedule, String> {
     let guard = state.lock().map_err(|_| "State lock poisoned")?;
+    let config = guard.config();
     Ok(BreakSchedule {
-        break_interval_minutes: guard.config.break_interval_minutes,
+        break_interval_minutes: config.break_interval,
+        pre_break_warning_seconds: config.pre_break_warning_time,
+        disable_options: config.disable_options.clone(),
     })
+}
+
+#[tauri::command]
+fn get_current_break_info(state: State<'_, Mutex<BreakEngine>>) -> Result<BreakInfo, String> {
+    let guard = state.lock().map_err(|_| "State lock poisoned")?;
+    guard
+        .current_break()
+        .ok_or_else(|| "No active break is available.".to_string())
+}
+
+#[tauri::command]
+fn set_idle_active(
+    state: State<'_, Mutex<BreakEngine>>,
+    active: bool,
+) -> Result<EngineStatus, String> {
+    let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
+    guard.set_idle(active);
+    Ok(guard.status())
+}
+
+#[tauri::command]
+fn set_fullscreen_active(
+    state: State<'_, Mutex<BreakEngine>>,
+    active: bool,
+) -> Result<EngineStatus, String> {
+    let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
+    guard.set_fullscreen(active);
+    Ok(guard.status())
+}
+
+#[tauri::command]
+fn sync_desktop_window_state(
+    app: tauri::AppHandle,
+    state: State<'_, Mutex<BreakEngine>>,
+) -> Result<EngineStatus, String> {
+    let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
+
+    #[cfg(not(desktop))]
+    let _ = &app;
+
+    #[cfg(desktop)]
+    let (fullscreen_active, idle_active) = app
+        .get_webview_window("main")
+        .map(|window| {
+            let fullscreen = window.is_fullscreen().unwrap_or(false);
+            let focused = window.is_focused().unwrap_or(true);
+            let minimized = window.is_minimized().unwrap_or(false);
+            let visible = window.is_visible().unwrap_or(true);
+            (fullscreen, !focused || minimized || !visible)
+        })
+        .unwrap_or((false, false));
+
+    #[cfg(not(desktop))]
+    let (fullscreen_active, idle_active) = (false, false);
+
+    guard.set_idle(idle_active);
+    guard.set_fullscreen(fullscreen_active);
+    Ok(guard.status())
+}
+
+#[tauri::command]
+fn disable_reminders(
+    state: State<'_, Mutex<BreakEngine>>,
+    seconds: u64,
+) -> Result<EngineStatus, String> {
+    let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
+    guard.disable_for(seconds)
 }
 
 #[tauri::command]
 fn skip_break(
     app: tauri::AppHandle,
-    state: State<'_, Mutex<BreakState>>,
+    state: State<'_, Mutex<BreakEngine>>,
 ) -> Result<(), String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
-
-    let mandatory = guard
-        .current
-        .as_ref()
-        .map(|b| b.mandatory)
-        .unwrap_or(false);
-
-    if mandatory {
-        return Err("This break is mandatory; skipping is disabled.".into());
-    }
-
-    guard.skip_streak = guard.skip_streak.saturating_add(1);
+    guard.skip_break()?;
 
     drop(guard);
     close_break_window(app)
@@ -188,11 +129,10 @@ fn skip_break(
 #[tauri::command]
 fn complete_break(
     app: tauri::AppHandle,
-    state: State<'_, Mutex<BreakState>>,
+    state: State<'_, Mutex<BreakEngine>>,
 ) -> Result<(), String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
-    guard.skip_streak = 0;
-    guard.current = None;
+    guard.complete_break()?;
 
     drop(guard);
     close_break_window(app)
@@ -203,10 +143,11 @@ fn complete_break(
 
 #[tauri::command]
 fn start_background_service(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(not(target_os = "android"))]
+    let _ = &app;
+
     #[cfg(target_os = "android")]
     {
-        // Just a proof that the command exists and is executed.
-        // We'll wire AndroidBridge after we confirm invocation works.
         if let Some(w) = app.get_webview_window("main") {
             w.eval("console.log('Rust: start_background_service invoked');")
                 .map_err(|e| e.to_string())?;
@@ -217,6 +158,9 @@ fn start_background_service(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn stop_background_service(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(not(target_os = "android"))]
+    let _ = &app;
+
     #[cfg(target_os = "android")]
     {
         if let Some(w) = app.get_webview_window("main") {
@@ -228,7 +172,17 @@ fn stop_background_service(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn show_break_window(app: tauri::AppHandle) -> Result<(), String> {
+fn show_break_window(
+    app: tauri::AppHandle,
+    state: State<'_, Mutex<BreakEngine>>,
+) -> Result<(), String> {
+    let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
+    guard.begin_break_now();
+    drop(guard);
+    open_break_window(app)
+}
+
+fn open_break_window(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(desktop)]
     {
         // Check if break window already exists
@@ -306,9 +260,9 @@ fn close_break_window(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(Mutex::new(BreakState::new()));
+        .manage(Mutex::new(BreakEngine::new(BreakEngineConfig::load())));
 
     // Add android plugin
     // #[cfg(target_os = "android")]
@@ -318,6 +272,9 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            #[cfg(not(desktop))]
+            let _ = &app;
+
             #[cfg(desktop)]
             {
                 // Create tray menu
@@ -333,7 +290,10 @@ pub fn run() {
                     .on_menu_event(|app, event| {
                         match event.id.as_ref() {
                             "test_break" => {
-                                let _ = show_break_window(app.clone());
+                                if let Ok(mut guard) = app.state::<Mutex<BreakEngine>>().lock() {
+                                    guard.begin_break_now();
+                                }
+                                let _ = open_break_window(app.clone());
                             }
                             "settings" => {
                                 // Show settings window
@@ -373,8 +333,15 @@ pub fn run() {
             close_break_window,
             start_background_service,
             stop_background_service,
+            start_break_timer,
+            stop_break_timer,
+            get_engine_status,
             get_break_schedule,
-            get_next_break_info,
+            get_current_break_info,
+            set_idle_active,
+            set_fullscreen_active,
+            sync_desktop_window_state,
+            disable_reminders,
             skip_break,
             complete_break
         ])

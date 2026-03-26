@@ -43,6 +43,27 @@
       border-radius: 8px;
       min-height: 50px;
     }
+    #countdownCard {
+      margin-top: 20px;
+      padding: 18px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #f0f7ff, #fff7e8);
+      text-align: center;
+    }
+    #countdownLabel {
+      display: block;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #666;
+      margin-bottom: 8px;
+    }
+    #countdownValue {
+      font-size: 44px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: #1d3557;
+    }
   </style>
 </head>
 <body>
@@ -53,18 +74,32 @@
   <button class="stop" id="stopService">Stop Break Timer</button>
   <button class="test" id="testBreak">Test Break Screen</button>
 
+  <div id="countdownCard">
+    <strong id="countdownLabel">Next break in</strong>
+    <div id="countdownValue">0:00</div>
+  </div>
+
   <div id="status">
     <strong>Status:</strong> <span id="statusText">Not started</span>
   </div>
+  <div id="disableOptions"></div>
 
   <script>
     const statusEl = document.getElementById('statusText');
     const tauriStatusEl = document.getElementById('tauri-status');
-    let desktopTimerId = null;
+    const disableOptionsEl = document.getElementById('disableOptions');
+    const countdownLabelEl = document.getElementById('countdownLabel');
+    const countdownValueEl = document.getElementById('countdownValue');
+    let statusPollId = null;
+    let breakWindowVisible = false;
 
-    if (window.AndroidBridge?.exitImmersiveMode) {
-      window.AndroidBridge.exitImmersiveMode();
+    function ensureAndroidMainScreenChrome() {
+      if (window.AndroidBridge?.exitImmersiveMode) {
+        window.AndroidBridge.exitImmersiveMode();
+      }
     }
+
+    ensureAndroidMainScreenChrome();
 
     // Check Tauri availability
     if (window.__TAURI__) {
@@ -81,11 +116,114 @@
       return Boolean(window.AndroidBridge?.startBreakService && window.AndroidBridge?.stopBreakService);
     }
 
-    function stopDesktopTimer() {
-      if (desktopTimerId !== null) {
-        clearInterval(desktopTimerId);
-        desktopTimerId = null;
+    function stopStatusPolling() {
+      if (statusPollId !== null) {
+        clearInterval(statusPollId);
+        statusPollId = null;
       }
+    }
+
+    function formatSeconds(totalSeconds) {
+      const mins = Math.floor(totalSeconds / 60);
+      const secs = totalSeconds % 60;
+      return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    function labelFromTemplate(name) {
+      return name
+        .split('_')
+        .slice(2)
+        .join(' ')
+        .replace(/\b\w/g, (letter) => letter.toUpperCase());
+    }
+
+    async function syncEngineStatus() {
+      const status = await invoke('get_engine_status');
+      const remaining = status.seconds_remaining == null ? '' : ` (${formatSeconds(status.seconds_remaining)})`;
+      const postpone = status.postpone_reason ? `, postponed by ${status.postpone_reason}` : '';
+
+      if (status.phase === 'running') {
+        statusEl.textContent = `Running${remaining}`;
+        statusEl.style.color = 'green';
+        countdownLabelEl.textContent = 'Next break in';
+        countdownValueEl.textContent = formatSeconds(status.seconds_remaining ?? 0);
+        countdownValueEl.style.color = '#1d3557';
+        breakWindowVisible = false;
+      } else if (status.phase === 'warning') {
+        statusEl.textContent = `Warning before break${remaining}${postpone}`;
+        statusEl.style.color = '#b26a00';
+        countdownLabelEl.textContent = 'Break starts in';
+        countdownValueEl.textContent = formatSeconds(status.seconds_remaining ?? 0);
+        countdownValueEl.style.color = '#b26a00';
+      } else if (status.phase === 'on_break') {
+        const template = status.current_break?.template_name
+          ? `: ${labelFromTemplate(status.current_break.template_name)}`
+          : '';
+        statusEl.textContent = `Break in progress${remaining}${template}`;
+        statusEl.style.color = '#1f5fbf';
+        countdownLabelEl.textContent = 'Break in progress';
+        countdownValueEl.textContent = formatSeconds(status.seconds_remaining ?? 0);
+        countdownValueEl.style.color = '#1f5fbf';
+        if (!breakWindowVisible) {
+          breakWindowVisible = true;
+          await invoke('show_break_window');
+        }
+      } else if (status.phase === 'disabled') {
+        statusEl.textContent = `Reminders disabled${remaining}`;
+        statusEl.style.color = '#7a4d00';
+        countdownLabelEl.textContent = 'Reminders resume in';
+        countdownValueEl.textContent = formatSeconds(status.seconds_remaining ?? 0);
+        countdownValueEl.style.color = '#7a4d00';
+      } else {
+        statusEl.textContent = 'Not started';
+        statusEl.style.color = 'inherit';
+        countdownLabelEl.textContent = 'Next break in';
+        countdownValueEl.textContent = '0:00';
+        countdownValueEl.style.color = '#1d3557';
+        breakWindowVisible = false;
+      }
+    }
+
+    async function syncActivitySignals() {
+      try {
+        if (isAndroidBridgeAvailable()) {
+          await invoke('set_idle_active', { active: document.hidden });
+          await invoke('set_fullscreen_active', { active: Boolean(document.fullscreenElement) });
+        } else {
+          await invoke('sync_desktop_window_state');
+        }
+      } catch (error) {
+        console.error('Failed to sync activity signals:', error);
+      }
+    }
+
+    function renderDisableOptions(options) {
+      disableOptionsEl.innerHTML = '';
+      if (!options?.length) {
+        return;
+      }
+
+      const heading = document.createElement('p');
+      heading.textContent = 'Disable reminders';
+      disableOptionsEl.appendChild(heading);
+
+      options.forEach((option) => {
+        const button = document.createElement('button');
+        const unit = option.time === 1 ? option.unit : `${option.unit}s`;
+        button.textContent = `${option.time} ${unit}`;
+        button.addEventListener('click', async () => {
+          try {
+            await invoke('disable_reminders', {
+              seconds: option.unit === 'hour' ? option.time * 60 * 60 : option.time * 60,
+            });
+            await syncEngineStatus();
+          } catch (error) {
+            statusEl.textContent = `Error: ${error}`;
+            statusEl.style.color = 'red';
+          }
+        });
+        disableOptionsEl.appendChild(button);
+      });
     }
 
     async function waitForAndroidBridge(timeoutMs = 2000) {
@@ -106,26 +244,37 @@
     document.getElementById('startService').addEventListener('click', async () => {
       try {
         statusEl.textContent = 'Starting service...';
+        ensureAndroidMainScreenChrome();
 
         if (isAndroidBridgeAvailable()) {
           const bridge = await waitForAndroidBridge();
+          ensureAndroidMainScreenChrome();
           console.log("Bridge ping:", bridge.ping?.());
+          const schedule = await invoke('get_break_schedule');
+          renderDisableOptions(schedule.disable_options);
+          await invoke('start_break_timer');
+          await syncActivitySignals();
+          await syncEngineStatus();
+          stopStatusPolling();
+          statusPollId = setInterval(() => {
+            Promise.all([syncActivitySignals(), syncEngineStatus()]).catch((error) => {
+              console.error('Failed to sync engine status:', error);
+            });
+          }, 1000);
           bridge.startBreakService();
           statusEl.textContent = 'Service started! Break timer running.';
         } else {
           const schedule = await invoke('get_break_schedule');
-          const intervalMs = schedule.break_interval_minutes * 60 * 1000;
-
-          stopDesktopTimer();
-          desktopTimerId = setInterval(async () => {
-            try {
-              await invoke('show_break_window');
-            } catch (error) {
-              console.error('Failed to show scheduled desktop break:', error);
-            }
-          }, intervalMs);
-
-          statusEl.textContent = `Desktop timer started. Next break in ${schedule.break_interval_minutes} minutes.`;
+          renderDisableOptions(schedule.disable_options);
+          await invoke('start_break_timer');
+          await syncActivitySignals();
+          await syncEngineStatus();
+          stopStatusPolling();
+          statusPollId = setInterval(() => {
+            Promise.all([syncActivitySignals(), syncEngineStatus()]).catch((error) => {
+              console.error('Failed to sync engine status:', error);
+            });
+          }, 1000);
         }
 
         statusEl.style.color = 'green';
@@ -141,14 +290,19 @@
     document.getElementById('stopService').addEventListener('click', async () => {
       try {
         statusEl.textContent = 'Stopping service...';
+        ensureAndroidMainScreenChrome();
 
         if (isAndroidBridgeAvailable()) {
           const bridge = await waitForAndroidBridge();
+          stopStatusPolling();
+          await invoke('stop_break_timer');
+          await syncEngineStatus();
           bridge.stopBreakService();
           statusEl.textContent = 'Service stopped.';
         } else {
-          stopDesktopTimer();
-          statusEl.textContent = 'Desktop timer stopped.';
+          stopStatusPolling();
+          await invoke('stop_break_timer');
+          await syncEngineStatus();
         }
 
         statusEl.style.color = 'orange';
@@ -171,6 +325,26 @@
         console.error('Failed to show break:', error);
       }
     });
+
+    invoke('get_break_schedule')
+      .then((schedule) => renderDisableOptions(schedule.disable_options))
+      .catch((error) => console.error('Failed to load break schedule:', error));
+
+    window.addEventListener('focus', ensureAndroidMainScreenChrome);
+    window.addEventListener('pageshow', ensureAndroidMainScreenChrome);
+
+    document.addEventListener('visibilitychange', () => {
+      ensureAndroidMainScreenChrome();
+      syncActivitySignals();
+    });
+
+    document.addEventListener('fullscreenchange', () => {
+      syncActivitySignals();
+    });
+
+    setInterval(() => {
+      ensureAndroidMainScreenChrome();
+    }, 1000);
   </script>
 </body>
 </html>
