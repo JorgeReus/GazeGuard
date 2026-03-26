@@ -46,10 +46,56 @@ pub struct BreakEngineConfig {
     pub disable_options: Vec<DisableOption>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct RawBreakEngineConfig {
+    short_break_interval: u64,
+    long_break_interval: u64,
+    long_break_duration: u64,
+    pre_break_warning_time: u64,
+    short_break_duration: u64,
+    strict_break: bool,
+    #[serde(default)]
+    idle_time: u64,
+    #[serde(default)]
+    short_breaks: Vec<BreakTemplate>,
+    #[serde(default)]
+    long_breaks: Vec<BreakTemplate>,
+    #[serde(default)]
+    disable_options: Vec<DisableOption>,
+}
+
 impl BreakEngineConfig {
     pub fn load() -> Self {
-        serde_json::from_str(include_str!("../gen/android/app/src/main/assets/config/safeeyes.json"))
-            .expect("safeeyes config should be valid JSON")
+        Self::from_yaml(include_str!("../gen/android/app/src/main/assets/config/defaults.yaml"))
+            .expect("defaults config should be valid YAML")
+    }
+
+    fn from_yaml(yaml: &str) -> Result<Self, serde_yaml::Error> {
+        let raw: RawBreakEngineConfig = serde_yaml::from_str(yaml)?;
+        Ok(Self::from_raw(raw))
+    }
+
+    fn from_raw(raw: RawBreakEngineConfig) -> Self {
+        let breaks_per_long = if raw.short_break_interval == 0 {
+            0
+        } else {
+            raw.long_break_interval
+                .saturating_div(raw.short_break_interval)
+                .saturating_sub(1) as u8
+        };
+
+        Self {
+            break_interval: raw.short_break_interval,
+            long_break_duration: raw.long_break_duration,
+            no_of_short_breaks_per_long_break: breaks_per_long,
+            pre_break_warning_time: raw.pre_break_warning_time,
+            short_break_duration: raw.short_break_duration,
+            strict_break: raw.strict_break,
+            idle_time: raw.idle_time,
+            short_breaks: raw.short_breaks,
+            long_breaks: raw.long_breaks,
+            disable_options: raw.disable_options,
+        }
     }
 }
 
@@ -77,6 +123,7 @@ pub struct EngineStatus {
     pub seconds_remaining: Option<u64>,
     pub break_interval_minutes: u64,
     pub warning_seconds: u64,
+    pub upcoming_break_kind: Option<BreakKind>,
     pub postpone_reason: Option<String>,
     pub current_break: Option<BreakInfo>,
     pub can_skip: bool,
@@ -167,6 +214,7 @@ impl BreakEngine {
             },
             break_interval_minutes: self.config.break_interval,
             warning_seconds: self.config.pre_break_warning_time,
+            upcoming_break_kind: self.upcoming_break_kind(),
             postpone_reason: self.postpone_reason().map(str::to_string),
             current_break: self.current_break.clone(),
             can_skip: self.current_break.is_some() && !self.config.strict_break,
@@ -301,6 +349,20 @@ impl BreakEngine {
             Some("fullscreen")
         } else {
             None
+        }
+    }
+
+    fn upcoming_break_kind(&self) -> Option<BreakKind> {
+        match self.phase {
+            EnginePhase::Stopped => None,
+            EnginePhase::OnBreak => self.current_break.as_ref().map(|info| info.kind),
+            EnginePhase::Running | EnginePhase::Warning | EnginePhase::Disabled => {
+                if self.shorts_since_long >= self.config.no_of_short_breaks_per_long_break {
+                    Some(BreakKind::Long)
+                } else {
+                    Some(BreakKind::Short)
+                }
+            }
         }
     }
 
@@ -445,19 +507,22 @@ mod tests {
     use super::{BreakEngine, BreakEngineConfig, BreakKind, EnginePhase};
 
     #[test]
-    fn loads_safe_eyes_json_shape() {
+    fn loads_yaml_defaults_shape() {
         let config = BreakEngineConfig::load();
 
         assert_eq!(config.break_interval, 15);
         assert_eq!(config.pre_break_warning_time, 10);
         assert_eq!(config.short_break_duration, 15);
         assert_eq!(config.long_break_duration, 60);
-        assert_eq!(config.no_of_short_breaks_per_long_break, 5);
+        assert_eq!(config.no_of_short_breaks_per_long_break, 4);
+        assert_eq!(config.idle_time, 5);
         assert!(!config.strict_break);
         assert_eq!(config.short_breaks.len(), 7);
         assert_eq!(config.long_breaks.len(), 2);
         assert_eq!(config.disable_options.len(), 4);
         assert_eq!(config.disable_options[0].seconds(), 30 * 60);
+        assert_eq!(config.short_breaks[0].name, "Gently close your eyes");
+        assert_eq!(config.long_breaks[0].name, "Walk for a while");
     }
 
     #[test]
@@ -474,16 +539,13 @@ mod tests {
         let fourth = engine.debug_force_break();
         engine.complete_break().unwrap();
         let fifth = engine.debug_force_break();
-        engine.complete_break().unwrap();
-        let sixth = engine.debug_force_break();
 
-        assert_eq!(first.template_name.as_deref(), Some("short_break_close_eyes"));
-        assert_eq!(second.template_name.as_deref(), Some("short_break_roll_eyes"));
-        assert_eq!(third.template_name.as_deref(), Some("short_break_rotate_clockwise"));
-        assert_eq!(fourth.template_name.as_deref(), Some("short_break_rotate_counter_clockwise"));
-        assert_eq!(fifth.template_name.as_deref(), Some("short_break_blink"));
-        assert_eq!(sixth.template_name.as_deref(), Some("long_break_walk"));
-        assert!(matches!(sixth.kind, BreakKind::Long));
+        assert_eq!(first.template_name.as_deref(), Some("Gently close your eyes"));
+        assert_eq!(second.template_name.as_deref(), Some("Roll your eyes a few times to each side"));
+        assert_eq!(third.template_name.as_deref(), Some("Rotate your eyes in clockwise direction"));
+        assert_eq!(fourth.template_name.as_deref(), Some("Rotate your eyes in counterclockwise direction"));
+        assert_eq!(fifth.template_name.as_deref(), Some("Walk for a while"));
+        assert!(matches!(fifth.kind, BreakKind::Long));
     }
 
     #[test]
@@ -540,7 +602,9 @@ mod tests {
 
     #[test]
     fn idle_only_postpones_after_idle_threshold() {
-        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        let mut config = BreakEngineConfig::load();
+        config.idle_time = 2;
+        let mut engine = BreakEngine::new(config);
         engine.start();
         engine.advance_by((15 * 60) - 130);
 
@@ -606,5 +670,20 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(matches!(engine.status().phase, EnginePhase::Running));
+    }
+
+    #[test]
+    fn reports_upcoming_break_kind_from_running_cycle() {
+        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        engine.start();
+
+        assert_eq!(engine.status().upcoming_break_kind, Some(BreakKind::Short));
+
+        for _ in 0..4 {
+            engine.debug_force_break();
+            engine.complete_break().unwrap();
+        }
+
+        assert_eq!(engine.status().upcoming_break_kind, Some(BreakKind::Long));
     }
 }

@@ -1,13 +1,12 @@
 package com.reus.gazeguard
 
 import android.content.Context
+import org.yaml.snakeyaml.Yaml
 
 object BreakEngineConfig {
-    private const val CONFIG_ASSET_PATH = "config/safeeyes.json"
+    private const val CONFIG_ASSET_PATH = "config/defaults.yaml"
     private const val DEFAULT_BREAK_INTERVAL_MINUTES = 15L
     private const val DEFAULT_PRE_BREAK_WARNING_SECONDS = 0L
-    private val BREAK_INTERVAL_PATTERN = Regex(""""break_interval"\s*:\s*(\d+)""")
-    private val PRE_BREAK_WARNING_PATTERN = Regex(""""pre_break_warning_time"\s*:\s*(\d+)""")
 
     data class Schedule(
         val breakIntervalMillis: Long,
@@ -27,18 +26,11 @@ object BreakEngineConfig {
         return parseSchedule(json).breakIntervalMillis
     }
 
-    fun parseSchedule(json: String): Schedule {
-        val breakIntervalMinutes = BREAK_INTERVAL_PATTERN
-            .find(json)
-            ?.groupValues
-            ?.get(1)
-            ?.toLongOrNull()
+    fun parseSchedule(yaml: String): Schedule {
+        val parsed = Yaml().load<Map<String, Any?>>(yaml).orEmpty()
+        val breakIntervalMinutes = (parsed["short_break_interval"] as? Number)?.toLong()
             ?: DEFAULT_BREAK_INTERVAL_MINUTES
-        val preBreakWarningSeconds = PRE_BREAK_WARNING_PATTERN
-            .find(json)
-            ?.groupValues
-            ?.get(1)
-            ?.toLongOrNull()
+        val preBreakWarningSeconds = (parsed["pre_break_warning_time"] as? Number)?.toLong()
             ?: DEFAULT_PRE_BREAK_WARNING_SECONDS
 
         return Schedule(

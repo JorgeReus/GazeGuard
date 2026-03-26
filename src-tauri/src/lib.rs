@@ -3,6 +3,8 @@
 mod break_engine;
 
 use serde::Serialize;
+use std::thread;
+use std::time::Duration;
 use std::sync::Mutex;
 use break_engine::{BreakEngine, BreakEngineConfig, BreakInfo, DisableOption, EngineStatus};
 use tauri::Manager;
@@ -16,6 +18,74 @@ struct BreakSchedule {
     break_interval_minutes: u64,
     pre_break_warning_seconds: u64,
     disable_options: Vec<DisableOption>,
+}
+
+fn create_break_engine() -> Mutex<BreakEngine> {
+    let mut engine = BreakEngine::new(BreakEngineConfig::load());
+    engine.start();
+    Mutex::new(engine)
+}
+
+fn format_duration(seconds: u64) -> String {
+    let minutes = seconds / 60;
+    let secs = seconds % 60;
+    format!("{minutes}:{secs:02}")
+}
+
+fn format_tray_title(status: &EngineStatus) -> String {
+    match status.phase {
+        break_engine::EnginePhase::Running | break_engine::EnginePhase::Warning => {
+            let remaining = format_duration(status.seconds_remaining.unwrap_or(0));
+            let kind = match status.upcoming_break_kind {
+                Some(break_engine::BreakKind::Short) => "short",
+                Some(break_engine::BreakKind::Long) => "long",
+                None => "break",
+            };
+            format!("{remaining} {kind}")
+        }
+        break_engine::EnginePhase::OnBreak => {
+            let remaining = format_duration(status.seconds_remaining.unwrap_or(0));
+            format!("{remaining} break")
+        }
+        break_engine::EnginePhase::Disabled => {
+            let remaining = format_duration(status.seconds_remaining.unwrap_or(0));
+            format!("{remaining} paused")
+        }
+        break_engine::EnginePhase::Stopped => "stopped".to_string(),
+    }
+}
+
+#[cfg(desktop)]
+fn refresh_tray_title(app: &tauri::AppHandle) {
+    let Some(tray) = app.tray_by_id("main") else {
+        return;
+    };
+
+    let title = app
+        .state::<Mutex<BreakEngine>>()
+        .lock()
+        .ok()
+        .map(|mut engine| format_tray_title(&engine.status()))
+        .unwrap_or_else(|| "GazeGuard".to_string());
+
+    let _ = tray.set_title(Some(&title));
+    let _ = tray.set_tooltip(Some(&title));
+}
+
+#[cfg(not(desktop))]
+fn refresh_tray_title(_app: &tauri::AppHandle) {
+}
+
+#[cfg(desktop)]
+fn spawn_tray_updater(app: tauri::AppHandle) {
+    thread::spawn(move || loop {
+        refresh_tray_title(&app);
+        thread::sleep(Duration::from_secs(1));
+    });
+}
+
+#[cfg(not(desktop))]
+fn spawn_tray_updater(_app: tauri::AppHandle) {
 }
 
 #[tauri::command]
@@ -262,7 +332,7 @@ fn close_break_window(app: tauri::AppHandle) -> Result<(), String> {
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(Mutex::new(BreakEngine::new(BreakEngineConfig::load())));
+        .manage(create_break_engine());
 
     // Add android plugin
     // #[cfg(target_os = "android")]
@@ -284,8 +354,9 @@ pub fn run() {
 
                 let menu = Menu::with_items(app, &[&test_break, &settings, &quit])?;
 
-                let _tray = TrayIconBuilder::new()
+                let _tray = TrayIconBuilder::with_id("main")
                     .icon(app.default_window_icon().unwrap().clone())
+                    .title("15:00 short")
                     .menu(&menu)
                     .on_menu_event(|app, event| {
                         match event.id.as_ref() {
@@ -320,6 +391,9 @@ pub fn run() {
                     })
                     .build(app)?;
 
+                refresh_tray_title(app.handle());
+                spawn_tray_updater(app.handle().clone());
+
                 // Hide the main window on startup (tray only mode)
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
@@ -347,4 +421,34 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{create_break_engine, format_tray_title};
+    use crate::break_engine::{BreakKind, EnginePhase, EngineStatus};
+
+    #[test]
+    fn startup_engine_is_running() {
+        let mut engine = create_break_engine().into_inner().unwrap();
+
+        assert!(matches!(engine.status().phase, EnginePhase::Running));
+    }
+
+    #[test]
+    fn tray_title_shows_remaining_time_and_break_kind() {
+        let title = format_tray_title(&EngineStatus {
+            phase: EnginePhase::Running,
+            seconds_remaining: Some(14 * 60 + 32),
+            break_interval_minutes: 15,
+            warning_seconds: 10,
+            upcoming_break_kind: Some(BreakKind::Short),
+            postpone_reason: None,
+            current_break: None,
+            can_skip: true,
+            disable_options: Vec::new(),
+        });
+
+        assert_eq!(title, "14:32 short");
+    }
 }

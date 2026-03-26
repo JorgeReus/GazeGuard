@@ -123,6 +123,15 @@
       }
     }
 
+    function startStatusPolling() {
+      stopStatusPolling();
+      statusPollId = setInterval(() => {
+        Promise.all([syncActivitySignals(), syncEngineStatus()]).catch((error) => {
+          console.error('Failed to sync engine status:', error);
+        });
+      }, 1000);
+    }
+
     function formatSeconds(totalSeconds) {
       const mins = Math.floor(totalSeconds / 60);
       const secs = totalSeconds % 60;
@@ -182,6 +191,7 @@
         countdownValueEl.style.color = '#1d3557';
         breakWindowVisible = false;
       }
+
     }
 
     async function syncActivitySignals() {
@@ -240,6 +250,20 @@
       throw new Error('Android bridge is unavailable. Background service only works on Android after the bridge loads.');
     }
 
+    async function bootstrapTimer() {
+      const schedule = await invoke('get_break_schedule');
+      renderDisableOptions(schedule.disable_options);
+      await syncActivitySignals();
+      await syncEngineStatus();
+      startStatusPolling();
+
+      if (isAndroidBridgeAvailable()) {
+        const bridge = await waitForAndroidBridge();
+        ensureAndroidMainScreenChrome();
+        bridge.startBreakService();
+      }
+    }
+
     // Start service
     document.getElementById('startService').addEventListener('click', async () => {
       try {
@@ -255,12 +279,7 @@
           await invoke('start_break_timer');
           await syncActivitySignals();
           await syncEngineStatus();
-          stopStatusPolling();
-          statusPollId = setInterval(() => {
-            Promise.all([syncActivitySignals(), syncEngineStatus()]).catch((error) => {
-              console.error('Failed to sync engine status:', error);
-            });
-          }, 1000);
+          startStatusPolling();
           bridge.startBreakService();
           statusEl.textContent = 'Service started! Break timer running.';
         } else {
@@ -269,12 +288,7 @@
           await invoke('start_break_timer');
           await syncActivitySignals();
           await syncEngineStatus();
-          stopStatusPolling();
-          statusPollId = setInterval(() => {
-            Promise.all([syncActivitySignals(), syncEngineStatus()]).catch((error) => {
-              console.error('Failed to sync engine status:', error);
-            });
-          }, 1000);
+          startStatusPolling();
         }
 
         statusEl.style.color = 'green';
@@ -319,6 +333,7 @@
       try {
         statusEl.textContent = 'Showing break screen...';
         await invoke('show_break_window');
+        breakWindowVisible = true;
       } catch (error) {
         statusEl.textContent = `Error: ${error}`;
         statusEl.style.color = 'red';
@@ -326,9 +341,11 @@
       }
     });
 
-    invoke('get_break_schedule')
-      .then((schedule) => renderDisableOptions(schedule.disable_options))
-      .catch((error) => console.error('Failed to load break schedule:', error));
+    bootstrapTimer().catch((error) => {
+      console.error('Failed to bootstrap timer:', error);
+      statusEl.textContent = `Error: ${error}`;
+      statusEl.style.color = 'red';
+    });
 
     window.addEventListener('focus', ensureAndroidMainScreenChrome);
     window.addEventListener('pageshow', ensureAndroidMainScreenChrome);

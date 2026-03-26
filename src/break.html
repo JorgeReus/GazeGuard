@@ -75,9 +75,7 @@
 
   function labelFromTemplate(name) {
     return name
-      .split('_')
-      .slice(2)
-      .join(' ')
+      .replace(/_/g, ' ')
       .replace(/\b\w/g, (letter) => letter.toUpperCase());
   }
 
