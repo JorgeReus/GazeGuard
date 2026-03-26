@@ -14,6 +14,7 @@ shortcut_disable_time: 2
 shortcut_skip: 9
 shortcut_postpone: 65
 strict_break: false
+consecutive_skip_limit: 2
 idle_time: 5
 disable_options:
   - label: for_x_minutes

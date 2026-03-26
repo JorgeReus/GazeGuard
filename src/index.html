@@ -64,6 +64,42 @@
       font-variant-numeric: tabular-nums;
       color: #1d3557;
     }
+    #android-break-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.95);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9998;
+    }
+    #android-break-modal {
+      text-align: center;
+      color: #fff;
+      padding: 40px;
+    }
+    #android-break-message {
+      font-size: 36px;
+      margin-bottom: 24px;
+    }
+    #android-break-timer {
+      font-size: 96px;
+      font-weight: 200;
+      margin-bottom: 32px;
+    }
+    #android-break-skip {
+      padding: 14px 32px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      background: rgba(255, 255, 255, 0.08);
+      color: white;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    #android-break-skip:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
@@ -84,6 +120,14 @@
   </div>
   <div id="disableOptions"></div>
 
+  <div id="android-break-overlay" aria-live="polite" role="alert">
+    <div id="android-break-modal">
+      <div id="android-break-message">Take a Break</div>
+      <div id="android-break-timer">0:00</div>
+      <button id="android-break-skip">Skip Break</button>
+    </div>
+  </div>
+
   <script>
     const statusEl = document.getElementById('statusText');
     const tauriStatusEl = document.getElementById('tauri-status');
@@ -92,6 +136,11 @@
     const countdownValueEl = document.getElementById('countdownValue');
     let statusPollId = null;
     let breakWindowVisible = false;
+    let androidOverlayVisible = false;
+    const androidBreakOverlayEl = document.getElementById('android-break-overlay');
+    const androidBreakMessageEl = document.getElementById('android-break-message');
+    const androidBreakTimerEl = document.getElementById('android-break-timer');
+    const androidBreakSkipBtn = document.getElementById('android-break-skip');
 
     function ensureAndroidMainScreenChrome() {
       if (window.AndroidBridge?.exitImmersiveMode) {
@@ -146,6 +195,39 @@
         .replace(/\b\w/g, (letter) => letter.toUpperCase());
     }
 
+    function setAndroidSkipState(canSkip, locked, mandatory) {
+      if (!androidBreakSkipBtn) return;
+      androidBreakSkipBtn.disabled = locked || !canSkip;
+      if (locked) {
+        androidBreakSkipBtn.textContent = 'Skip Locked';
+      } else if (mandatory || !canSkip) {
+        androidBreakSkipBtn.textContent = 'Mandatory Break';
+      } else {
+        androidBreakSkipBtn.textContent = 'Skip Break';
+      }
+    }
+
+    function showAndroidBreakOverlay(status) {
+      if (!androidBreakOverlayEl) return;
+      androidBreakMessageEl.textContent = status.current_break?.template_name
+        ? labelFromTemplate(status.current_break.template_name)
+        : status.current_break?.kind === 'long'
+          ? 'Take a Long Break'
+          : 'Take a Short Break';
+      const remainingSeconds = status.seconds_remaining ?? status.current_break?.duration_seconds ?? 0;
+      androidBreakTimerEl.textContent = formatSeconds(remainingSeconds);
+      const currentBreakMandatory = Boolean(status.current_break?.mandatory);
+      setAndroidSkipState(status.can_skip, status.skip_limit_reached, currentBreakMandatory);
+      androidBreakOverlayEl.style.display = 'flex';
+      androidOverlayVisible = true;
+    }
+
+    function hideAndroidBreakOverlay() {
+      if (!androidBreakOverlayEl) return;
+      androidBreakOverlayEl.style.display = 'none';
+      androidOverlayVisible = false;
+    }
+
     async function syncEngineStatus() {
       const status = await invoke('get_engine_status');
       const remaining = status.seconds_remaining == null ? '' : ` (${formatSeconds(status.seconds_remaining)})`;
@@ -173,9 +255,13 @@
         countdownLabelEl.textContent = 'Break in progress';
         countdownValueEl.textContent = formatSeconds(status.seconds_remaining ?? 0);
         countdownValueEl.style.color = '#1f5fbf';
-        if (!breakWindowVisible) {
+        const androidManaged = isAndroidBridgeAvailable();
+        if (!androidManaged && !breakWindowVisible) {
           breakWindowVisible = true;
           await invoke('show_break_window');
+        }
+        if (androidManaged) {
+          showAndroidBreakOverlay(status);
         }
       } else if (status.phase === 'disabled') {
         statusEl.textContent = `Reminders disabled${remaining}`;
@@ -190,6 +276,10 @@
         countdownValueEl.textContent = '0:00';
         countdownValueEl.style.color = '#1d3557';
         breakWindowVisible = false;
+      }
+
+      if (status.phase !== 'on_break' && androidOverlayVisible) {
+        hideAndroidBreakOverlay();
       }
 
     }
@@ -340,6 +430,18 @@
         console.error('Failed to show break:', error);
       }
     });
+
+    if (androidBreakSkipBtn) {
+      androidBreakSkipBtn.addEventListener('click', async () => {
+        try {
+          await invoke('skip_break');
+        } catch (error) {
+          console.error('Failed to skip break via overlay:', error);
+        } finally {
+          await syncEngineStatus();
+        }
+      });
+    }
 
     bootstrapTimer().catch((error) => {
       console.error('Failed to bootstrap timer:', error);

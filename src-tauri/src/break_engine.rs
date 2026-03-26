@@ -32,6 +32,10 @@ impl DisableOption {
     }
 }
 
+fn default_skip_limit() -> u8 {
+    2
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BreakEngineConfig {
     pub break_interval: u64,
@@ -40,6 +44,7 @@ pub struct BreakEngineConfig {
     pub pre_break_warning_time: u64,
     pub short_break_duration: u64,
     pub strict_break: bool,
+    pub consecutive_skip_limit: u8,
     pub idle_time: u64,
     pub short_breaks: Vec<BreakTemplate>,
     pub long_breaks: Vec<BreakTemplate>,
@@ -54,6 +59,8 @@ struct RawBreakEngineConfig {
     pre_break_warning_time: u64,
     short_break_duration: u64,
     strict_break: bool,
+    #[serde(default = "default_skip_limit")]
+    consecutive_skip_limit: u8,
     #[serde(default)]
     idle_time: u64,
     #[serde(default)]
@@ -91,6 +98,7 @@ impl BreakEngineConfig {
             pre_break_warning_time: raw.pre_break_warning_time,
             short_break_duration: raw.short_break_duration,
             strict_break: raw.strict_break,
+            consecutive_skip_limit: raw.consecutive_skip_limit,
             idle_time: raw.idle_time,
             short_breaks: raw.short_breaks,
             long_breaks: raw.long_breaks,
@@ -127,6 +135,7 @@ pub struct EngineStatus {
     pub postpone_reason: Option<String>,
     pub current_break: Option<BreakInfo>,
     pub can_skip: bool,
+    pub skip_limit_reached: bool,
     pub disable_options: Vec<DisableOption>,
 }
 
@@ -146,6 +155,7 @@ pub struct BreakEngine {
     idle_elapsed_seconds: u64,
     fullscreen: bool,
     last_synced_at: Option<Instant>,
+    consecutive_skips: u8,
 }
 
 impl BreakEngine {
@@ -166,6 +176,7 @@ impl BreakEngine {
             idle_elapsed_seconds: 0,
             fullscreen: false,
             last_synced_at: None,
+            consecutive_skips: 0,
         }
     }
 
@@ -177,6 +188,7 @@ impl BreakEngine {
         self.disabled_remaining = 0;
         self.current_break = None;
         self.idle_elapsed_seconds = 0;
+        self.consecutive_skips = 0;
         self.last_synced_at = Some(Instant::now());
         self.reconcile();
         self.status()
@@ -190,6 +202,7 @@ impl BreakEngine {
         self.disabled_remaining = 0;
         self.current_break = None;
         self.idle_elapsed_seconds = 0;
+        self.consecutive_skips = 0;
         self.last_synced_at = None;
         self.status()
     }
@@ -203,6 +216,9 @@ impl BreakEngine {
     pub fn status(&mut self) -> EngineStatus {
         self.sync_with_clock();
         self.reconcile();
+        let skip_allowed = !self.config.strict_break
+            && self.consecutive_skips < self.config.consecutive_skip_limit;
+        let skip_limit_reached = self.consecutive_skips >= self.config.consecutive_skip_limit;
         EngineStatus {
             phase: self.phase.clone(),
             seconds_remaining: match self.phase {
@@ -217,7 +233,8 @@ impl BreakEngine {
             upcoming_break_kind: self.upcoming_break_kind(),
             postpone_reason: self.postpone_reason().map(str::to_string),
             current_break: self.current_break.clone(),
-            can_skip: self.current_break.is_some() && !self.config.strict_break,
+            can_skip: self.current_break.is_some() && skip_allowed,
+            skip_limit_reached,
             disable_options: self.config.disable_options.clone(),
         }
     }
@@ -277,6 +294,10 @@ impl BreakEngine {
         if self.config.strict_break {
             return Err("This break is mandatory; skipping is disabled.".into());
         }
+        if self.consecutive_skips >= self.config.consecutive_skip_limit {
+            return Err("Skip limit reached".into());
+        }
+        self.consecutive_skips = self.consecutive_skips.saturating_add(1);
         self.finish_break_cycle();
         Ok(self.status())
     }
@@ -287,6 +308,7 @@ impl BreakEngine {
             return Ok(self.status());
         }
         self.finish_break_cycle();
+        self.consecutive_skips = 0;
         Ok(self.status())
     }
 
@@ -466,6 +488,7 @@ impl BreakEngine {
                     seconds -= step;
                     if self.break_remaining == 0 {
                         self.finish_break_cycle();
+                        self.consecutive_skips = 0;
                     }
                 }
             }
@@ -573,6 +596,38 @@ mod tests {
 
         let error = engine.skip_break().unwrap_err();
         assert!(error.contains("mandatory"));
+    }
+
+    #[test]
+    fn consecutive_skip_limit_blocks_excessive_skips() {
+        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        engine.start();
+
+        engine.begin_break_now();
+        engine.skip_break().unwrap();
+        engine.begin_break_now();
+        engine.skip_break().unwrap();
+
+        let info = engine.begin_break_now();
+        assert!(matches!(info.kind, BreakKind::Short | BreakKind::Long));
+        let err = engine.skip_break().unwrap_err();
+        assert!(err.contains("Skip limit"));
+    }
+
+    #[test]
+    fn consecutive_skip_limit_resets_after_completion() {
+        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        engine.start();
+
+        engine.begin_break_now();
+        engine.skip_break().unwrap();
+        engine.begin_break_now();
+        engine.complete_break().unwrap();
+
+        assert_eq!(engine.consecutive_skips, 0);
+
+        engine.begin_break_now();
+        engine.skip_break().unwrap();
     }
 
     #[test]

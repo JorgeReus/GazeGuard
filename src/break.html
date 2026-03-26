@@ -55,16 +55,25 @@
   <button class="skip-button" id="skip">Skip Break</button>
 
 <script>
-  const { invoke } = window.__TAURI__.core;
-
+  let invoke;
   const timerElement = document.getElementById('timer');
   const skipButton = document.getElementById('skip');
   const messageElement = document.getElementById('message');
   let timerId = null;
   let timeLeft = 0;
 
-  if (window.AndroidBridge?.enterImmersiveMode) {
-    window.AndroidBridge.enterImmersiveMode();
+  async function waitForTauriInvoke() {
+    if (window.__TAURI__?.core?.invoke) {
+      return window.__TAURI__.core.invoke;
+    }
+    return new Promise((resolve) => {
+      const intervalId = setInterval(() => {
+        if (window.__TAURI__?.core?.invoke) {
+          clearInterval(intervalId);
+          resolve(window.__TAURI__.core.invoke);
+        }
+      }, 50);
+    });
   }
 
   function formatTime(seconds) {
@@ -79,16 +88,16 @@
       .replace(/\b\w/g, (letter) => letter.toUpperCase());
   }
 
-  function setSkipState(canSkip) {
-    if (!canSkip) {
-      skipButton.disabled = true;
-      skipButton.style.opacity = '0.4';
-      skipButton.style.cursor = 'not-allowed';
+  function setSkipState(canSkip, skipLimitReached) {
+    const disabled = skipLimitReached || !canSkip;
+    skipButton.disabled = disabled;
+    skipButton.style.opacity = disabled ? '0.4' : '1';
+    skipButton.style.cursor = disabled ? 'not-allowed' : 'pointer';
+    if (skipLimitReached) {
+      skipButton.textContent = 'Skip Locked';
+    } else if (!canSkip) {
       skipButton.textContent = 'Mandatory Break';
     } else {
-      skipButton.disabled = false;
-      skipButton.style.opacity = '1';
-      skipButton.style.cursor = 'pointer';
       skipButton.textContent = 'Skip Break';
     }
   }
@@ -106,12 +115,16 @@
   }
 
   async function initBreak() {
-    const info = await invoke('get_current_break_info');
+    const [info, status] = await Promise.all([
+      invoke('get_current_break_info'),
+      invoke('get_engine_status'),
+    ]);
+
     timeLeft = info.duration_seconds;
     messageElement.textContent = info.template_name
       ? labelFromTemplate(info.template_name)
       : (info.kind === 'long' ? 'Take a Long Break' : 'Take a Short Break');
-    setSkipState(!info.mandatory);
+    setSkipState(status.can_skip, status.skip_limit_reached);
     updateTimer();
   }
 
@@ -124,11 +137,18 @@
       await invoke('skip_break');
     } catch (e) {
       console.error(e);
-      // If mandatory, Rust will reject; UI already disables it, but this is safety.
     }
   });
 
-  initBreak().catch(console.error);
+  async function bootstrap() {
+    invoke = await waitForTauriInvoke();
+    if (window.AndroidBridge?.enterImmersiveMode) {
+      window.AndroidBridge.enterImmersiveMode();
+    }
+    await initBreak();
+  }
+
+  bootstrap().catch(console.error);
 </script>
 </body>
 </html>

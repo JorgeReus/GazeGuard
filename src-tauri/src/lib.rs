@@ -190,10 +190,14 @@ fn skip_break(
     state: State<'_, Mutex<BreakEngine>>,
 ) -> Result<(), String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
-    guard.skip_break()?;
-
+    let skip_result = guard.skip_break();
     drop(guard);
-    close_break_window(app)
+
+    if skip_result.is_ok() {
+        close_break_window(app)
+    } else {
+        skip_result.map(|_| ())
+    }
 }
 
 #[tauri::command]
@@ -443,6 +447,7 @@ mod tests {
             break_interval_minutes: 15,
             warning_seconds: 10,
             upcoming_break_kind: Some(BreakKind::Short),
+            skip_limit_reached: false,
             postpone_reason: None,
             current_break: None,
             can_skip: true,
