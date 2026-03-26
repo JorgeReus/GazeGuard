@@ -2,10 +2,10 @@ meta:
   config_version: "6.0.4"
 random_order: true
 allow_postpone: false
-short_break_interval: 15
-long_break_interval: 75
+short_break_interval: 1
+long_break_interval: 5
 long_break_duration: 60
-pre_break_warning_time: 10
+pre_break_warning_time: 5
 short_break_duration: 15
 persist_state: false
 postpone_duration: 5
@@ -14,6 +14,7 @@ shortcut_disable_time: 2
 shortcut_skip: 9
 shortcut_postpone: 65
 strict_break: false
+consecutive_skip_limit: 2
 idle_time: 5
 disable_options:
   - label: for_x_minutes

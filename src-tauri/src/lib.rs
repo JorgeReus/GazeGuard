@@ -3,15 +3,20 @@
 mod break_engine;
 
 use serde::Serialize;
+use serde_json::json;
 use std::thread;
 use std::time::Duration;
-use std::sync::Mutex;
-use break_engine::{BreakEngine, BreakEngineConfig, BreakInfo, DisableOption, EngineStatus};
+use std::sync::{Arc, Mutex, OnceLock};
+use break_engine::{BreakEngine, BreakEngineConfig, BreakInfo, DisableOption, EnginePhase, EngineStatus};
 use tauri::Manager;
 use tauri::State;
 
 #[cfg(desktop)]
 use tauri::{menu::{Menu, MenuItem}, tray::TrayIconBuilder};
+
+type SharedBreakEngine = Arc<Mutex<BreakEngine>>;
+
+static SHARED_BREAK_ENGINE: OnceLock<Mutex<Option<SharedBreakEngine>>> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
 struct BreakSchedule {
@@ -20,10 +25,132 @@ struct BreakSchedule {
     disable_options: Vec<DisableOption>,
 }
 
-fn create_break_engine() -> Mutex<BreakEngine> {
+#[derive(Debug, Serialize)]
+struct AndroidBreakOverlaySnapshot {
+    phase: String,
+    remaining_seconds: u64,
+    message: String,
+}
+
+fn shared_break_engine_slot() -> &'static Mutex<Option<SharedBreakEngine>> {
+    SHARED_BREAK_ENGINE.get_or_init(|| Mutex::new(None))
+}
+
+fn register_shared_break_engine(engine: SharedBreakEngine) {
+    if let Ok(mut slot) = shared_break_engine_slot().lock() {
+        *slot = Some(engine);
+    }
+}
+
+fn get_shared_break_engine() -> Option<SharedBreakEngine> {
+    shared_break_engine_slot()
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+}
+
+fn engine_phase_label(phase: &EnginePhase) -> &'static str {
+    match phase {
+        EnginePhase::Stopped => "stopped",
+        EnginePhase::Running => "running",
+        EnginePhase::Warning => "warning",
+        EnginePhase::OnBreak => "on_break",
+        EnginePhase::Disabled => "disabled",
+    }
+}
+
+fn debug_engine_phase_for_android() -> String {
+    let Some(engine) = get_shared_break_engine() else {
+        return "unavailable".to_string();
+    };
+
+    engine
+        .lock()
+        .ok()
+        .map(|mut guard| engine_phase_label(&guard.status().phase).to_string())
+        .unwrap_or_else(|| "poisoned".to_string())
+}
+
+fn force_break_now_for_android() -> String {
+    let Some(engine) = get_shared_break_engine() else {
+        return "unavailable".to_string();
+    };
+
+    engine
+        .lock()
+        .ok()
+        .map(|mut guard| {
+            guard.begin_break_now();
+            engine_phase_label(&guard.status().phase).to_string()
+        })
+        .unwrap_or_else(|| "poisoned".to_string())
+}
+
+fn break_overlay_snapshot_for_android() -> String {
+    let Some(engine) = get_shared_break_engine() else {
+        return json!({
+            "phase": "unavailable",
+            "remaining_seconds": 0,
+            "message": "Break unavailable"
+        })
+        .to_string();
+    };
+
+    engine
+        .lock()
+        .ok()
+        .map(|mut guard| {
+            let status = guard.status();
+            let phase = engine_phase_label(&status.phase).to_string();
+            let remaining_seconds = status.seconds_remaining.unwrap_or(0);
+            let message = status
+                .current_break
+                .as_ref()
+                .map(|info| {
+                    info.template_name.clone().unwrap_or_else(|| match info.kind {
+                        break_engine::BreakKind::Long => "Take a Long Break".to_string(),
+                        break_engine::BreakKind::Short => "Take a Short Break".to_string(),
+                    })
+                })
+                .unwrap_or_else(|| "Break ended".to_string());
+
+            serde_json::to_string(&AndroidBreakOverlaySnapshot {
+                phase,
+                remaining_seconds,
+                message,
+            })
+            .unwrap_or_else(|_| {
+                json!({
+                    "phase": "error",
+                    "remaining_seconds": 0,
+                    "message": "Break unavailable"
+                })
+                .to_string()
+            })
+        })
+        .unwrap_or_else(|| {
+            json!({
+                "phase": "poisoned",
+                "remaining_seconds": 0,
+                "message": "Break unavailable"
+            })
+            .to_string()
+        })
+}
+
+#[cfg(test)]
+fn set_shared_break_engine_for_tests(engine: Option<SharedBreakEngine>) {
+    if let Ok(mut slot) = shared_break_engine_slot().lock() {
+        *slot = engine;
+    }
+}
+
+fn create_break_engine() -> SharedBreakEngine {
     let mut engine = BreakEngine::new(BreakEngineConfig::load());
     engine.start();
-    Mutex::new(engine)
+    let engine = Arc::new(Mutex::new(engine));
+    register_shared_break_engine(engine.clone());
+    engine
 }
 
 fn format_duration(seconds: u64) -> String {
@@ -62,7 +189,7 @@ fn refresh_tray_title(app: &tauri::AppHandle) {
     };
 
     let title = app
-        .state::<Mutex<BreakEngine>>()
+        .state::<SharedBreakEngine>()
         .lock()
         .ok()
         .map(|mut engine| format_tray_title(&engine.status()))
@@ -89,25 +216,25 @@ fn spawn_tray_updater(_app: tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn start_break_timer(state: State<'_, Mutex<BreakEngine>>) -> Result<EngineStatus, String> {
+fn start_break_timer(state: State<'_, SharedBreakEngine>) -> Result<EngineStatus, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
     Ok(guard.start())
 }
 
 #[tauri::command]
-fn stop_break_timer(state: State<'_, Mutex<BreakEngine>>) -> Result<EngineStatus, String> {
+fn stop_break_timer(state: State<'_, SharedBreakEngine>) -> Result<EngineStatus, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
     Ok(guard.stop())
 }
 
 #[tauri::command]
-fn get_engine_status(state: State<'_, Mutex<BreakEngine>>) -> Result<EngineStatus, String> {
+fn get_engine_status(state: State<'_, SharedBreakEngine>) -> Result<EngineStatus, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
     Ok(guard.status())
 }
 
 #[tauri::command]
-fn get_break_schedule(state: State<'_, Mutex<BreakEngine>>) -> Result<BreakSchedule, String> {
+fn get_break_schedule(state: State<'_, SharedBreakEngine>) -> Result<BreakSchedule, String> {
     let guard = state.lock().map_err(|_| "State lock poisoned")?;
     let config = guard.config();
     Ok(BreakSchedule {
@@ -118,7 +245,7 @@ fn get_break_schedule(state: State<'_, Mutex<BreakEngine>>) -> Result<BreakSched
 }
 
 #[tauri::command]
-fn get_current_break_info(state: State<'_, Mutex<BreakEngine>>) -> Result<BreakInfo, String> {
+fn get_current_break_info(state: State<'_, SharedBreakEngine>) -> Result<BreakInfo, String> {
     let guard = state.lock().map_err(|_| "State lock poisoned")?;
     guard
         .current_break()
@@ -127,7 +254,7 @@ fn get_current_break_info(state: State<'_, Mutex<BreakEngine>>) -> Result<BreakI
 
 #[tauri::command]
 fn set_idle_active(
-    state: State<'_, Mutex<BreakEngine>>,
+    state: State<'_, SharedBreakEngine>,
     active: bool,
 ) -> Result<EngineStatus, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
@@ -137,7 +264,7 @@ fn set_idle_active(
 
 #[tauri::command]
 fn set_fullscreen_active(
-    state: State<'_, Mutex<BreakEngine>>,
+    state: State<'_, SharedBreakEngine>,
     active: bool,
 ) -> Result<EngineStatus, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
@@ -148,7 +275,7 @@ fn set_fullscreen_active(
 #[tauri::command]
 fn sync_desktop_window_state(
     app: tauri::AppHandle,
-    state: State<'_, Mutex<BreakEngine>>,
+    state: State<'_, SharedBreakEngine>,
 ) -> Result<EngineStatus, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
 
@@ -177,7 +304,7 @@ fn sync_desktop_window_state(
 
 #[tauri::command]
 fn disable_reminders(
-    state: State<'_, Mutex<BreakEngine>>,
+    state: State<'_, SharedBreakEngine>,
     seconds: u64,
 ) -> Result<EngineStatus, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
@@ -187,25 +314,68 @@ fn disable_reminders(
 #[tauri::command]
 fn skip_break(
     app: tauri::AppHandle,
-    state: State<'_, Mutex<BreakEngine>>,
+    state: State<'_, SharedBreakEngine>,
 ) -> Result<(), String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
-    guard.skip_break()?;
-
+    let skip_result = guard.skip_break();
     drop(guard);
-    close_break_window(app)
+
+    if skip_result.is_ok() {
+        close_break_window(app)
+    } else {
+        skip_result.map(|_| ())
+    }
 }
 
 #[tauri::command]
 fn complete_break(
     app: tauri::AppHandle,
-    state: State<'_, Mutex<BreakEngine>>,
+    state: State<'_, SharedBreakEngine>,
 ) -> Result<(), String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
     guard.complete_break()?;
 
     drop(guard);
     close_break_window(app)
+}
+
+#[cfg(target_os = "android")]
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reus_gazeguard_RustProbe_debugEnginePhase(
+    mut env: jni::JNIEnv,
+    _: jni::objects::JClass,
+) -> jni::sys::jstring {
+    let phase = debug_engine_phase_for_android();
+    env.new_string(phase)
+        .map(|value| value.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[cfg(target_os = "android")]
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reus_gazeguard_RustProbe_forceBreakNow(
+    mut env: jni::JNIEnv,
+    _: jni::objects::JClass,
+) -> jni::sys::jstring {
+    let phase = force_break_now_for_android();
+    env.new_string(phase)
+        .map(|value| value.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[cfg(target_os = "android")]
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reus_gazeguard_RustProbe_breakOverlaySnapshot(
+    mut env: jni::JNIEnv,
+    _: jni::objects::JClass,
+) -> jni::sys::jstring {
+    let snapshot = break_overlay_snapshot_for_android();
+    env.new_string(snapshot)
+        .map(|value| value.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 // #[cfg(target_os = "android")]
@@ -244,7 +414,7 @@ fn stop_background_service(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn show_break_window(
     app: tauri::AppHandle,
-    state: State<'_, Mutex<BreakEngine>>,
+    state: State<'_, SharedBreakEngine>,
 ) -> Result<(), String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
     guard.begin_break_now();
@@ -361,7 +531,7 @@ pub fn run() {
                     .on_menu_event(|app, event| {
                         match event.id.as_ref() {
                             "test_break" => {
-                                if let Ok(mut guard) = app.state::<Mutex<BreakEngine>>().lock() {
+                                if let Ok(mut guard) = app.state::<SharedBreakEngine>().lock() {
                                     guard.begin_break_now();
                                 }
                                 let _ = open_break_window(app.clone());
@@ -425,12 +595,17 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{create_break_engine, format_tray_title};
+    use super::{
+        break_overlay_snapshot_for_android, create_break_engine, debug_engine_phase_for_android,
+        force_break_now_for_android,
+        format_tray_title, set_shared_break_engine_for_tests,
+    };
     use crate::break_engine::{BreakKind, EnginePhase, EngineStatus};
 
     #[test]
     fn startup_engine_is_running() {
-        let mut engine = create_break_engine().into_inner().unwrap();
+        let engine = create_break_engine();
+        let mut engine = engine.lock().unwrap();
 
         assert!(matches!(engine.status().phase, EnginePhase::Running));
     }
@@ -443,6 +618,7 @@ mod tests {
             break_interval_minutes: 15,
             warning_seconds: 10,
             upcoming_break_kind: Some(BreakKind::Short),
+            skip_limit_reached: false,
             postpone_reason: None,
             current_break: None,
             can_skip: true,
@@ -450,5 +626,43 @@ mod tests {
         });
 
         assert_eq!(title, "14:32 short");
+    }
+
+    #[test]
+    fn android_probe_reads_the_shared_engine_phase() {
+        let engine = create_break_engine();
+        set_shared_break_engine_for_tests(Some(engine.clone()));
+
+        assert_eq!(debug_engine_phase_for_android(), "running");
+
+        set_shared_break_engine_for_tests(None);
+    }
+
+    #[test]
+    fn android_probe_can_force_the_shared_engine_into_break_phase() {
+        let engine = create_break_engine();
+        set_shared_break_engine_for_tests(Some(engine.clone()));
+
+        assert_eq!(force_break_now_for_android(), "on_break");
+        let mut guard = engine.lock().unwrap();
+        let status = guard.status();
+        assert!(matches!(status.phase, EnginePhase::OnBreak));
+        assert!(status.current_break.is_some());
+
+        set_shared_break_engine_for_tests(None);
+    }
+
+    #[test]
+    fn android_overlay_snapshot_reports_active_break_state() {
+        let engine = create_break_engine();
+        set_shared_break_engine_for_tests(Some(engine.clone()));
+        assert_eq!(force_break_now_for_android(), "on_break");
+
+        let snapshot = break_overlay_snapshot_for_android();
+
+        assert!(snapshot.contains("\"phase\":\"on_break\""));
+        assert!(snapshot.contains("\"remaining_seconds\":60"));
+
+        set_shared_break_engine_for_tests(None);
     }
 }

@@ -32,6 +32,10 @@ impl DisableOption {
     }
 }
 
+fn default_skip_limit() -> u8 {
+    2
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BreakEngineConfig {
     pub break_interval: u64,
@@ -40,6 +44,7 @@ pub struct BreakEngineConfig {
     pub pre_break_warning_time: u64,
     pub short_break_duration: u64,
     pub strict_break: bool,
+    pub consecutive_skip_limit: u8,
     pub idle_time: u64,
     pub short_breaks: Vec<BreakTemplate>,
     pub long_breaks: Vec<BreakTemplate>,
@@ -54,6 +59,8 @@ struct RawBreakEngineConfig {
     pre_break_warning_time: u64,
     short_break_duration: u64,
     strict_break: bool,
+    #[serde(default = "default_skip_limit")]
+    consecutive_skip_limit: u8,
     #[serde(default)]
     idle_time: u64,
     #[serde(default)]
@@ -91,6 +98,7 @@ impl BreakEngineConfig {
             pre_break_warning_time: raw.pre_break_warning_time,
             short_break_duration: raw.short_break_duration,
             strict_break: raw.strict_break,
+            consecutive_skip_limit: raw.consecutive_skip_limit,
             idle_time: raw.idle_time,
             short_breaks: raw.short_breaks,
             long_breaks: raw.long_breaks,
@@ -127,6 +135,7 @@ pub struct EngineStatus {
     pub postpone_reason: Option<String>,
     pub current_break: Option<BreakInfo>,
     pub can_skip: bool,
+    pub skip_limit_reached: bool,
     pub disable_options: Vec<DisableOption>,
 }
 
@@ -146,6 +155,7 @@ pub struct BreakEngine {
     idle_elapsed_seconds: u64,
     fullscreen: bool,
     last_synced_at: Option<Instant>,
+    consecutive_skips: u8,
 }
 
 impl BreakEngine {
@@ -166,6 +176,7 @@ impl BreakEngine {
             idle_elapsed_seconds: 0,
             fullscreen: false,
             last_synced_at: None,
+            consecutive_skips: 0,
         }
     }
 
@@ -177,6 +188,7 @@ impl BreakEngine {
         self.disabled_remaining = 0;
         self.current_break = None;
         self.idle_elapsed_seconds = 0;
+        self.consecutive_skips = 0;
         self.last_synced_at = Some(Instant::now());
         self.reconcile();
         self.status()
@@ -190,6 +202,7 @@ impl BreakEngine {
         self.disabled_remaining = 0;
         self.current_break = None;
         self.idle_elapsed_seconds = 0;
+        self.consecutive_skips = 0;
         self.last_synced_at = None;
         self.status()
     }
@@ -203,6 +216,9 @@ impl BreakEngine {
     pub fn status(&mut self) -> EngineStatus {
         self.sync_with_clock();
         self.reconcile();
+        let skip_allowed = !self.config.strict_break
+            && self.consecutive_skips < self.config.consecutive_skip_limit;
+        let skip_limit_reached = self.consecutive_skips >= self.config.consecutive_skip_limit;
         EngineStatus {
             phase: self.phase.clone(),
             seconds_remaining: match self.phase {
@@ -217,7 +233,8 @@ impl BreakEngine {
             upcoming_break_kind: self.upcoming_break_kind(),
             postpone_reason: self.postpone_reason().map(str::to_string),
             current_break: self.current_break.clone(),
-            can_skip: self.current_break.is_some() && !self.config.strict_break,
+            can_skip: self.current_break.is_some() && skip_allowed,
+            skip_limit_reached,
             disable_options: self.config.disable_options.clone(),
         }
     }
@@ -277,6 +294,10 @@ impl BreakEngine {
         if self.config.strict_break {
             return Err("This break is mandatory; skipping is disabled.".into());
         }
+        if self.consecutive_skips >= self.config.consecutive_skip_limit {
+            return Err("Skip limit reached".into());
+        }
+        self.consecutive_skips = self.consecutive_skips.saturating_add(1);
         self.finish_break_cycle();
         Ok(self.status())
     }
@@ -287,6 +308,7 @@ impl BreakEngine {
             return Ok(self.status());
         }
         self.finish_break_cycle();
+        self.consecutive_skips = 0;
         Ok(self.status())
     }
 
@@ -466,6 +488,7 @@ impl BreakEngine {
                     seconds -= step;
                     if self.break_remaining == 0 {
                         self.finish_break_cycle();
+                        self.consecutive_skips = 0;
                     }
                 }
             }
@@ -510,9 +533,9 @@ mod tests {
     fn loads_yaml_defaults_shape() {
         let config = BreakEngineConfig::load();
 
-        assert_eq!(config.break_interval, 15);
-        assert_eq!(config.pre_break_warning_time, 10);
-        assert_eq!(config.short_break_duration, 15);
+        assert_eq!(config.break_interval, 1);
+        assert_eq!(config.pre_break_warning_time, 5);
+        assert_eq!(config.short_break_duration, 60);
         assert_eq!(config.long_break_duration, 60);
         assert_eq!(config.no_of_short_breaks_per_long_break, 4);
         assert_eq!(config.idle_time, 5);
@@ -552,12 +575,14 @@ mod tests {
     fn enters_warning_before_break_and_then_starts_break() {
         let mut engine = BreakEngine::new(BreakEngineConfig::load());
         engine.start();
+        let work_seconds = engine.config.break_interval * 60;
+        let warning_seconds = engine.config.pre_break_warning_time;
 
-        let status = engine.advance_by(15 * 60 - 10);
+        let status = engine.advance_by(work_seconds - warning_seconds);
         assert!(matches!(status.phase, EnginePhase::Warning));
-        assert_eq!(status.seconds_remaining, Some(10));
+        assert_eq!(status.seconds_remaining, Some(warning_seconds));
 
-        let status = engine.advance_by(10);
+        let status = engine.advance_by(warning_seconds);
         assert!(matches!(status.phase, EnginePhase::OnBreak));
         assert!(status.current_break.is_some());
     }
@@ -576,50 +601,90 @@ mod tests {
     }
 
     #[test]
-    fn idle_and_fullscreen_postpone_warning_and_break() {
+    fn consecutive_skip_limit_blocks_excessive_skips() {
         let mut engine = BreakEngine::new(BreakEngineConfig::load());
         engine.start();
-        engine.set_idle(true);
 
-        let status = engine.advance_by(15 * 60);
+        engine.begin_break_now();
+        engine.skip_break().unwrap();
+        engine.begin_break_now();
+        engine.skip_break().unwrap();
+
+        let info = engine.begin_break_now();
+        assert!(matches!(info.kind, BreakKind::Short | BreakKind::Long));
+        let err = engine.skip_break().unwrap_err();
+        assert!(err.contains("Skip limit"));
+    }
+
+    #[test]
+    fn consecutive_skip_limit_resets_after_completion() {
+        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        engine.start();
+
+        engine.begin_break_now();
+        engine.skip_break().unwrap();
+        engine.begin_break_now();
+        engine.complete_break().unwrap();
+
+        assert_eq!(engine.consecutive_skips, 0);
+
+        engine.begin_break_now();
+        engine.skip_break().unwrap();
+    }
+
+    #[test]
+    fn idle_and_fullscreen_postpone_warning_and_break() {
+        let mut config = BreakEngineConfig::load();
+        config.idle_time = 0;
+        let mut engine = BreakEngine::new(config);
+        engine.start();
+        engine.set_idle(true);
+        let work_seconds = engine.config.break_interval * 60;
+        let warning_seconds = engine.config.pre_break_warning_time;
+
+        let status = engine.advance_by(work_seconds);
         assert!(matches!(status.phase, EnginePhase::Running));
         assert_eq!(status.postpone_reason.as_deref(), Some("idle"));
-        assert_eq!(status.seconds_remaining, Some(10));
+        assert_eq!(status.seconds_remaining, Some(warning_seconds));
 
         engine.set_idle(false);
         let status = engine.status();
         assert!(matches!(status.phase, EnginePhase::Warning));
 
         engine.set_fullscreen(true);
-        let status = engine.advance_by(10);
+        let status = engine.advance_by(warning_seconds);
         assert!(matches!(status.phase, EnginePhase::Warning));
         assert_eq!(status.postpone_reason.as_deref(), Some("fullscreen"));
 
         engine.set_fullscreen(false);
-        let status = engine.advance_by(10);
+        let status = engine.advance_by(warning_seconds);
         assert!(matches!(status.phase, EnginePhase::OnBreak));
     }
 
     #[test]
     fn idle_only_postpones_after_idle_threshold() {
         let mut config = BreakEngineConfig::load();
+        config.break_interval = 4;
         config.idle_time = 2;
         let mut engine = BreakEngine::new(config);
         engine.start();
-        engine.advance_by((15 * 60) - 130);
+        let work_seconds = engine.config.break_interval * 60;
+        let warning_seconds = engine.config.pre_break_warning_time;
+        let threshold_seconds = 2 * 60;
+        engine.advance_by(work_seconds.saturating_sub(threshold_seconds + warning_seconds + 1));
 
         engine.set_idle(true);
-        engine.advance_by((2 * 60) - 1);
+        engine.advance_by(threshold_seconds - 1);
         let status = engine.status();
         assert!(matches!(status.phase, EnginePhase::Running));
         assert_eq!(status.postpone_reason, None);
-        assert_eq!(status.seconds_remaining, Some(11));
+        assert_eq!(status.seconds_remaining, Some(warning_seconds + 2));
 
         engine.advance_by(1);
         let status = engine.status();
         assert!(matches!(status.phase, EnginePhase::Running));
         assert_eq!(status.postpone_reason.as_deref(), Some("idle"));
-        assert_eq!(status.seconds_remaining, Some(10));
+        assert_eq!(status.seconds_remaining, Some(warning_seconds + 1));
     }
 
     #[test]
@@ -643,7 +708,7 @@ mod tests {
         let info = engine.begin_break_now();
 
         assert!(matches!(info.kind, BreakKind::Short));
-        assert_eq!(info.duration_seconds, 15);
+        assert_eq!(info.duration_seconds, 60);
         assert!(engine.current_break().is_some());
     }
 
@@ -652,11 +717,12 @@ mod tests {
         let mut engine = BreakEngine::new(BreakEngineConfig::load());
         engine.start();
         engine.rewind_last_sync_by(3);
+        let work_seconds = engine.config.break_interval * 60;
 
         let status = engine.status();
 
         assert!(matches!(status.phase, EnginePhase::Running));
-        assert_eq!(status.seconds_remaining, Some(15 * 60 - 3));
+        assert_eq!(status.seconds_remaining, Some(work_seconds - 3));
     }
 
     #[test]

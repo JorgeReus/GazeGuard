@@ -43,6 +43,26 @@
       border-radius: 8px;
       min-height: 50px;
     }
+    #androidAlertSetup {
+      margin-top: 16px;
+      padding: 14px;
+      border-radius: 10px;
+      background: #fff4d6;
+      border: 1px solid #f0d48a;
+      display: none;
+    }
+    #androidAlertSetup p {
+      margin: 0 0 10px 0;
+      color: #6b4f00;
+      line-height: 1.4;
+    }
+    #androidAlertSetup button {
+      margin: 8px 0 0 0;
+      padding: 12px;
+      font-size: 14px;
+      background: #1d3557;
+      color: white;
+    }
     #countdownCard {
       margin-top: 20px;
       padding: 18px;
@@ -64,6 +84,42 @@
       font-variant-numeric: tabular-nums;
       color: #1d3557;
     }
+    #android-break-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.95);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9998;
+    }
+    #android-break-modal {
+      text-align: center;
+      color: #fff;
+      padding: 40px;
+    }
+    #android-break-message {
+      font-size: 36px;
+      margin-bottom: 24px;
+    }
+    #android-break-timer {
+      font-size: 96px;
+      font-weight: 200;
+      margin-bottom: 32px;
+    }
+    #android-break-skip {
+      padding: 14px 32px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      background: rgba(255, 255, 255, 0.08);
+      color: white;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    #android-break-skip:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
@@ -82,7 +138,21 @@
   <div id="status">
     <strong>Status:</strong> <span id="statusText">Not started</span>
   </div>
+  <div id="androidAlertSetup">
+    <p id="androidAlertSetupText">Android needs permission to show aggressive break alerts while the app is in the background.</p>
+    <button id="openFullScreenAlertSettings">Allow Full-Screen Break Alerts</button>
+    <button id="openNotificationSettings">Open Notification Settings</button>
+    <button id="openOverlaySettings">Allow Break Overlay</button>
+  </div>
   <div id="disableOptions"></div>
+
+  <div id="android-break-overlay" aria-live="polite" role="alert">
+    <div id="android-break-modal">
+      <div id="android-break-message">Take a Break</div>
+      <div id="android-break-timer">0:00</div>
+      <button id="android-break-skip">Skip Break</button>
+    </div>
+  </div>
 
   <script>
     const statusEl = document.getElementById('statusText');
@@ -90,8 +160,15 @@
     const disableOptionsEl = document.getElementById('disableOptions');
     const countdownLabelEl = document.getElementById('countdownLabel');
     const countdownValueEl = document.getElementById('countdownValue');
+    const androidAlertSetupEl = document.getElementById('androidAlertSetup');
+    const androidAlertSetupTextEl = document.getElementById('androidAlertSetupText');
     let statusPollId = null;
     let breakWindowVisible = false;
+    let androidOverlayVisible = false;
+    const androidBreakOverlayEl = document.getElementById('android-break-overlay');
+    const androidBreakMessageEl = document.getElementById('android-break-message');
+    const androidBreakTimerEl = document.getElementById('android-break-timer');
+    const androidBreakSkipBtn = document.getElementById('android-break-skip');
 
     function ensureAndroidMainScreenChrome() {
       if (window.AndroidBridge?.exitImmersiveMode) {
@@ -114,6 +191,41 @@
 
     function isAndroidBridgeAvailable() {
       return Boolean(window.AndroidBridge?.startBreakService && window.AndroidBridge?.stopBreakService);
+    }
+
+    function setAndroidAlertSetupVisible(visible, message = null) {
+      if (!androidAlertSetupEl) return;
+      androidAlertSetupEl.style.display = visible ? 'block' : 'none';
+      if (message && androidAlertSetupTextEl) {
+        androidAlertSetupTextEl.textContent = message;
+      }
+    }
+
+    async function syncAndroidAlertCapability() {
+      if (!isAndroidBridgeAvailable()) {
+        setAndroidAlertSetupVisible(false);
+        return;
+      }
+
+      try {
+        const bridge = await waitForAndroidBridge();
+        const allowed = bridge.canUseFullScreenBreakAlerts?.();
+        const overlayAllowed = bridge.canDrawBreakOverlay?.();
+        if (allowed && overlayAllowed) {
+          setAndroidAlertSetupVisible(false);
+        } else {
+          setAndroidAlertSetupVisible(
+            true,
+            'Android is blocking automatic background break presentation. Enable full-screen alerts, notifications, and break overlay permission for the app.'
+          );
+        }
+      } catch (error) {
+        console.error('Failed to check Android alert capability:', error);
+        setAndroidAlertSetupVisible(
+          true,
+          'Could not verify Android alert permissions. Open settings and allow notifications/full-screen alerts for the app.'
+        );
+      }
     }
 
     function stopStatusPolling() {
@@ -146,6 +258,39 @@
         .replace(/\b\w/g, (letter) => letter.toUpperCase());
     }
 
+    function setAndroidSkipState(canSkip, locked, mandatory) {
+      if (!androidBreakSkipBtn) return;
+      androidBreakSkipBtn.disabled = locked || !canSkip;
+      if (locked) {
+        androidBreakSkipBtn.textContent = 'Skip Locked';
+      } else if (mandatory || !canSkip) {
+        androidBreakSkipBtn.textContent = 'Mandatory Break';
+      } else {
+        androidBreakSkipBtn.textContent = 'Skip Break';
+      }
+    }
+
+    function showAndroidBreakOverlay(status) {
+      if (!androidBreakOverlayEl) return;
+      androidBreakMessageEl.textContent = status.current_break?.template_name
+        ? labelFromTemplate(status.current_break.template_name)
+        : status.current_break?.kind === 'long'
+          ? 'Take a Long Break'
+          : 'Take a Short Break';
+      const remainingSeconds = status.seconds_remaining ?? status.current_break?.duration_seconds ?? 0;
+      androidBreakTimerEl.textContent = formatSeconds(remainingSeconds);
+      const currentBreakMandatory = Boolean(status.current_break?.mandatory);
+      setAndroidSkipState(status.can_skip, status.skip_limit_reached, currentBreakMandatory);
+      androidBreakOverlayEl.style.display = 'flex';
+      androidOverlayVisible = true;
+    }
+
+    function hideAndroidBreakOverlay() {
+      if (!androidBreakOverlayEl) return;
+      androidBreakOverlayEl.style.display = 'none';
+      androidOverlayVisible = false;
+    }
+
     async function syncEngineStatus() {
       const status = await invoke('get_engine_status');
       const remaining = status.seconds_remaining == null ? '' : ` (${formatSeconds(status.seconds_remaining)})`;
@@ -173,9 +318,13 @@
         countdownLabelEl.textContent = 'Break in progress';
         countdownValueEl.textContent = formatSeconds(status.seconds_remaining ?? 0);
         countdownValueEl.style.color = '#1f5fbf';
-        if (!breakWindowVisible) {
+        const androidManaged = isAndroidBridgeAvailable();
+        if (!androidManaged && !breakWindowVisible) {
           breakWindowVisible = true;
           await invoke('show_break_window');
+        }
+        if (androidManaged) {
+          showAndroidBreakOverlay(status);
         }
       } else if (status.phase === 'disabled') {
         statusEl.textContent = `Reminders disabled${remaining}`;
@@ -190,6 +339,10 @@
         countdownValueEl.textContent = '0:00';
         countdownValueEl.style.color = '#1d3557';
         breakWindowVisible = false;
+      }
+
+      if (status.phase !== 'on_break' && androidOverlayVisible) {
+        hideAndroidBreakOverlay();
       }
 
     }
@@ -253,6 +406,7 @@
     async function bootstrapTimer() {
       const schedule = await invoke('get_break_schedule');
       renderDisableOptions(schedule.disable_options);
+      await syncAndroidAlertCapability();
       await syncActivitySignals();
       await syncEngineStatus();
       startStatusPolling();
@@ -276,6 +430,7 @@
           console.log("Bridge ping:", bridge.ping?.());
           const schedule = await invoke('get_break_schedule');
           renderDisableOptions(schedule.disable_options);
+          await syncAndroidAlertCapability();
           await invoke('start_break_timer');
           await syncActivitySignals();
           await syncEngineStatus();
@@ -285,6 +440,7 @@
         } else {
           const schedule = await invoke('get_break_schedule');
           renderDisableOptions(schedule.disable_options);
+          await syncAndroidAlertCapability();
           await invoke('start_break_timer');
           await syncActivitySignals();
           await syncEngineStatus();
@@ -341,6 +497,45 @@
       }
     });
 
+    if (androidBreakSkipBtn) {
+      androidBreakSkipBtn.addEventListener('click', async () => {
+        try {
+          await invoke('skip_break');
+        } catch (error) {
+          console.error('Failed to skip break via overlay:', error);
+        } finally {
+          await syncEngineStatus();
+        }
+      });
+    }
+
+    document.getElementById('openFullScreenAlertSettings')?.addEventListener('click', async () => {
+      try {
+        const bridge = await waitForAndroidBridge();
+        bridge.openFullScreenAlertSettings?.();
+      } catch (error) {
+        console.error('Failed to open full-screen alert settings:', error);
+      }
+    });
+
+    document.getElementById('openNotificationSettings')?.addEventListener('click', async () => {
+      try {
+        const bridge = await waitForAndroidBridge();
+        bridge.openNotificationSettings?.();
+      } catch (error) {
+        console.error('Failed to open notification settings:', error);
+      }
+    });
+
+    document.getElementById('openOverlaySettings')?.addEventListener('click', async () => {
+      try {
+        const bridge = await waitForAndroidBridge();
+        bridge.openOverlaySettings?.();
+      } catch (error) {
+        console.error('Failed to open overlay settings:', error);
+      }
+    });
+
     bootstrapTimer().catch((error) => {
       console.error('Failed to bootstrap timer:', error);
       statusEl.textContent = `Error: ${error}`;
@@ -353,6 +548,7 @@
     document.addEventListener('visibilitychange', () => {
       ensureAndroidMainScreenChrome();
       syncActivitySignals();
+      syncAndroidAlertCapability();
     });
 
     document.addEventListener('fullscreenchange', () => {

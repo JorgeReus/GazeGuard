@@ -3,11 +3,14 @@ package com.reus.gazeguard
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color
+import android.app.NotificationManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -16,6 +19,13 @@ class MainActivity : TauriActivity() {
     private var breakReceiver: BreakReceiver? = null
     private var webView: WebView? = null
     private val TAG = "MainActivity"
+
+    companion object {
+        @Volatile
+        private var appVisible: Boolean = false
+
+        fun isAppVisible(): Boolean = appVisible
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,6 +55,7 @@ class MainActivity : TauriActivity() {
             webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
             Log.d(TAG, "AndroidBridge injected into WebView")
             syncBreakEngineSignals()
+            logRustProbePhase("onWebViewCreate")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to inject AndroidBridge", e)
         }
@@ -79,6 +90,64 @@ class MainActivity : TauriActivity() {
         @JavascriptInterface
         fun exitImmersiveMode() {
             setImmersiveMode(false)
+        }
+
+        @JavascriptInterface
+        fun canUseFullScreenBreakAlerts(): Boolean {
+            val notificationsEnabled = NotificationManagerCompat.from(this@MainActivity).areNotificationsEnabled()
+            val fullScreenAllowed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                val notificationManager = getSystemService(NotificationManager::class.java)
+                notificationManager?.canUseFullScreenIntent() ?: false
+            } else {
+                true
+            }
+            return notificationsEnabled && fullScreenAllowed
+        }
+
+        @JavascriptInterface
+        fun openFullScreenAlertSettings() {
+            runOnUiThread {
+                val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
+                        data = android.net.Uri.parse("package:$packageName")
+                    }
+                } else {
+                    Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                        putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                    }
+                }
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+            }
+        }
+
+        @JavascriptInterface
+        fun openNotificationSettings() {
+            runOnUiThread {
+                val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(intent)
+            }
+        }
+
+        @JavascriptInterface
+        fun canDrawBreakOverlay(): Boolean {
+            return Settings.canDrawOverlays(this@MainActivity)
+        }
+
+        @JavascriptInterface
+        fun openOverlaySettings() {
+            runOnUiThread {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    android.net.Uri.parse("package:$packageName")
+                ).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(intent)
+            }
         }
     }
 
@@ -115,11 +184,13 @@ class MainActivity : TauriActivity() {
 
     override fun onResume() {
         super.onResume()
+        appVisible = true
         setImmersiveMode(false)
         notifyBreakEngine(BreakEngineSignals.setIdleActiveScript(false))
     }
 
     override fun onPause() {
+        appVisible = false
         notifyBreakEngine(BreakEngineSignals.setIdleActiveScript(true))
         super.onPause()
     }
@@ -127,6 +198,7 @@ class MainActivity : TauriActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        Log.d(TAG, "onNewIntent show_break=${intent.getBooleanExtra("show_break", false)}")
 
         if (intent.getBooleanExtra("show_break", false)) {
             showBreakScreen()
@@ -162,6 +234,15 @@ class MainActivity : TauriActivity() {
     private fun notifyBreakEngine(script: String) {
         runOnUiThread {
             webView?.evaluateJavascript(script, null)
+        }
+    }
+
+    private fun logRustProbePhase(source: String) {
+        try {
+            val phase = RustProbe.debugEnginePhase()
+            Log.d(TAG, "Rust probe phase from $source: $phase")
+        } catch (e: Throwable) {
+            Log.e(TAG, "Rust probe failed from $source", e)
         }
     }
 
