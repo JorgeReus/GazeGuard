@@ -13,6 +13,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -33,6 +34,8 @@ class BreakReminderService : Service() {
     private var overlayView: View? = null
     private var overlayMessageView: TextView? = null
     private var overlayTimerView: TextView? = null
+    private var overlayPostponeButton: Button? = null
+    private var overlayPostponeMenu: LinearLayout? = null
     private val rustDeliveryPollRunnable = object : Runnable {
         override fun run() {
             pollRustDeliveryState()
@@ -270,6 +273,10 @@ class BreakReminderService : Service() {
                     orientation = LinearLayout.VERTICAL
                     gravity = Gravity.CENTER
                 }
+                val controls = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
                 val message = TextView(this).apply {
                     textSize = 28f
                     setTextColor(Color.WHITE)
@@ -280,14 +287,96 @@ class BreakReminderService : Service() {
                     setTextColor(Color.WHITE)
                     gravity = Gravity.CENTER
                 }
+                val postponeButton = Button(this).apply {
+                    text = "Postpone Break"
+                    setBackgroundColor(Color.TRANSPARENT)
+                    setTextColor(Color.WHITE)
+                }
+                val postponeMenu = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    visibility = View.GONE
+                }
                 content.addView(message)
                 content.addView(timer)
+                val skipButton = Button(this).apply {
+                    text = "Skip Break"
+                    setBackgroundColor(Color.TRANSPARENT)
+                    setTextColor(Color.WHITE)
+                    setOnClickListener {
+                        runCatching {
+                            if (MainActivity.isAppVisible()) {
+                                sendBroadcast(Intent(this@BreakReminderService, BreakReceiver::class.java).apply {
+                                    action = ACTION_TRIGGER_BREAK
+                                })
+                            } else {
+                                val launchIntent = Intent(this@BreakReminderService, MainActivity::class.java).apply {
+                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                                    putExtra("show_break", true)
+                                }
+                                startActivity(launchIntent)
+                            }
+                        }
+                    }
+                }
+                val controlsSpacer = View(this)
+                controls.addView(
+                    skipButton,
+                    LinearLayout.LayoutParams(
+                        0,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        1f
+                    )
+                )
+                controls.addView(
+                    controlsSpacer,
+                    LinearLayout.LayoutParams(
+                        0,
+                        0,
+                        1f
+                    )
+                )
+                val postponeContainer = FrameLayout(this)
+                postponeContainer.addView(
+                    postponeMenu,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.WRAP_CONTENT,
+                        FrameLayout.LayoutParams.WRAP_CONTENT,
+                        Gravity.BOTTOM or Gravity.END
+                    )
+                )
+                postponeContainer.addView(
+                    postponeButton,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.WRAP_CONTENT,
+                        FrameLayout.LayoutParams.WRAP_CONTENT,
+                        Gravity.BOTTOM or Gravity.END
+                    )
+                )
+                controls.addView(
+                    postponeContainer,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                )
                 root.addView(
                     content,
                     FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.MATCH_PARENT,
                         FrameLayout.LayoutParams.MATCH_PARENT
                     )
+                )
+                root.addView(
+                    controls,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.WRAP_CONTENT,
+                        Gravity.BOTTOM
+                    ).apply {
+                        marginStart = 40
+                        marginEnd = 40
+                        bottomMargin = 40
+                    }
                 )
                 root.addView(
                     bottomScrim,
@@ -316,9 +405,54 @@ class BreakReminderService : Service() {
                 overlayView = root
                 overlayMessageView = message
                 overlayTimerView = timer
+                overlayPostponeButton = postponeButton
+                overlayPostponeMenu = postponeMenu
             }
             overlayMessageView?.text = snapshot.message
             overlayTimerView?.text = formatOverlayTime(snapshot.remainingSeconds)
+            updateOverlayPostponeControls(snapshot)
+        }
+    }
+
+    private fun updateOverlayPostponeControls(snapshot: AndroidBreakDeliverySnapshot) {
+        val postponeButton = overlayPostponeButton ?: return
+        val postponeMenu = overlayPostponeMenu ?: return
+        val canPostpone = snapshot.canPostpone && snapshot.postponeOptions.isNotEmpty()
+
+        postponeButton.isEnabled = canPostpone
+        postponeButton.alpha = if (canPostpone) 1f else 0.4f
+        postponeButton.text = if (canPostpone) "Postpone Break" else "Postpone Disabled"
+
+        if (!canPostpone) {
+            postponeMenu.visibility = View.GONE
+            postponeMenu.removeAllViews()
+            return
+        }
+
+        postponeButton.setOnClickListener {
+            postponeMenu.visibility = if (postponeMenu.visibility == View.VISIBLE) {
+                View.GONE
+            } else {
+                View.VISIBLE
+            }
+        }
+
+        postponeMenu.removeAllViews()
+        snapshot.postponeOptions.forEach { option ->
+            val button = Button(this).apply {
+                text = formatPostponeOption(option)
+                setBackgroundColor(Color.TRANSPARENT)
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    runCatching {
+                        RustProbe.postponeBreak(option.seconds)
+                    }.onFailure { error ->
+                        Log.e(TAG, "Rust postponeBreak failed", error)
+                    }
+                    postponeMenu.visibility = View.GONE
+                }
+            }
+            postponeMenu.addView(button)
         }
     }
 
@@ -329,12 +463,23 @@ class BreakReminderService : Service() {
         overlayView = null
         overlayMessageView = null
         overlayTimerView = null
+        overlayPostponeButton = null
+        overlayPostponeMenu = null
     }
 
     private fun formatOverlayTime(totalSeconds: Long): String {
         val minutes = totalSeconds / 60
         val seconds = totalSeconds % 60
         return "%d:%02d".format(minutes, seconds)
+    }
+
+    private fun formatPostponeOption(option: AndroidPostponeOption): String {
+        val labelUnit = if (option.duration == 1L) {
+            option.unit.removeSuffix("s")
+        } else {
+            option.unit
+        }
+        return "${option.duration} $labelUnit"
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

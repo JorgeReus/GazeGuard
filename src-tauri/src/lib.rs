@@ -7,7 +7,7 @@ use serde_json::json;
 use std::thread;
 use std::time::Duration;
 use std::sync::{Arc, Mutex, OnceLock};
-use break_engine::{BreakEngine, BreakEngineConfig, BreakInfo, DisableOption, EnginePhase, EngineStatus};
+use break_engine::{BreakEngine, BreakEngineConfig, BreakInfo, DisableOption, EnginePhase, EngineStatus, PostponeOption};
 use tauri::Manager;
 use tauri::State;
 
@@ -23,6 +23,7 @@ struct BreakSchedule {
     break_interval_minutes: u64,
     pre_break_warning_seconds: u64,
     disable_options: Vec<DisableOption>,
+    postpone_options: Vec<PostponeOption>,
 }
 
 #[derive(Debug, Serialize)]
@@ -32,6 +33,8 @@ struct AndroidBreakOverlaySnapshot {
     message: String,
     should_show_notification: bool,
     should_show_overlay: bool,
+    can_postpone: bool,
+    postpone_options: Vec<break_engine::PostponeOption>,
 }
 
 fn shared_break_engine_slot() -> &'static Mutex<Option<SharedBreakEngine>> {
@@ -88,6 +91,21 @@ fn force_break_now_for_android() -> String {
         .unwrap_or_else(|| "poisoned".to_string())
 }
 
+fn postpone_break_for_android(seconds: u64) -> String {
+    let Some(engine) = get_shared_break_engine() else {
+        return "unavailable".to_string();
+    };
+
+    engine
+        .lock()
+        .ok()
+        .map(|mut guard| match guard.postpone_break_with_override(Some(seconds)) {
+            Ok(status) => engine_phase_label(&status.phase).to_string(),
+            Err(error) => error,
+        })
+        .unwrap_or_else(|| "poisoned".to_string())
+}
+
 fn break_overlay_snapshot_for_android() -> String {
     let Some(engine) = get_shared_break_engine() else {
         return json!({
@@ -95,7 +113,9 @@ fn break_overlay_snapshot_for_android() -> String {
             "remaining_seconds": 0,
             "message": "Break unavailable",
             "should_show_notification": false,
-            "should_show_overlay": false
+            "should_show_overlay": false,
+            "can_postpone": false,
+            "postpone_options": []
         })
         .to_string();
     };
@@ -136,6 +156,8 @@ fn break_overlay_snapshot_for_android() -> String {
                 message,
                 should_show_notification,
                 should_show_overlay,
+                can_postpone: status.can_postpone,
+                postpone_options: guard.config().postpone_options.clone(),
             })
             .unwrap_or_else(|_| {
                 json!({
@@ -143,7 +165,9 @@ fn break_overlay_snapshot_for_android() -> String {
                     "remaining_seconds": 0,
                     "message": "Break unavailable",
                     "should_show_notification": false,
-                    "should_show_overlay": false
+                    "should_show_overlay": false,
+                    "can_postpone": false,
+                    "postpone_options": []
                 })
                 .to_string()
             })
@@ -154,7 +178,9 @@ fn break_overlay_snapshot_for_android() -> String {
                 "remaining_seconds": 0,
                 "message": "Break unavailable",
                 "should_show_notification": false,
-                "should_show_overlay": false
+                "should_show_overlay": false,
+                "can_postpone": false,
+                "postpone_options": []
             })
             .to_string()
         })
@@ -263,6 +289,7 @@ fn get_break_schedule(state: State<'_, SharedBreakEngine>) -> Result<BreakSchedu
         break_interval_minutes: config.break_interval,
         pre_break_warning_seconds: config.pre_break_warning_time,
         disable_options: config.disable_options.clone(),
+        postpone_options: config.postpone_options.clone(),
     })
 }
 
@@ -361,6 +388,19 @@ fn complete_break(
     close_break_window(app)
 }
 
+#[tauri::command]
+fn postpone_break(
+    app: tauri::AppHandle,
+    state: State<'_, SharedBreakEngine>,
+    seconds: Option<u64>,
+) -> Result<(), String> {
+    let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
+    guard.postpone_break_with_override(seconds)?;
+
+    drop(guard);
+    close_break_window(app)
+}
+
 #[cfg(target_os = "android")]
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
@@ -382,6 +422,20 @@ pub extern "system" fn Java_com_reus_gazeguard_RustProbe_forceBreakNow(
     _: jni::objects::JClass,
 ) -> jni::sys::jstring {
     let phase = force_break_now_for_android();
+    env.new_string(phase)
+        .map(|value| value.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[cfg(target_os = "android")]
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reus_gazeguard_RustProbe_postponeBreak(
+    mut env: jni::JNIEnv,
+    _: jni::objects::JClass,
+    seconds: jni::sys::jlong,
+) -> jni::sys::jstring {
+    let phase = postpone_break_for_android(seconds.max(0) as u64);
     env.new_string(phase)
         .map(|value| value.into_raw())
         .unwrap_or(std::ptr::null_mut())
@@ -609,6 +663,7 @@ pub fn run() {
             sync_desktop_window_state,
             disable_reminders,
             skip_break,
+            postpone_break,
             complete_break
         ])
         .run(tauri::generate_context!())
@@ -644,6 +699,7 @@ mod tests {
             postpone_reason: None,
             current_break: None,
             can_skip: true,
+            can_postpone: false,
             disable_options: Vec::new(),
         });
 
@@ -684,6 +740,8 @@ mod tests {
 
         assert!(snapshot.contains("\"phase\":\"on_break\""));
         assert!(snapshot.contains("\"remaining_seconds\":15"));
+        assert!(snapshot.contains("\"can_postpone\":true"));
+        assert!(snapshot.contains("\"postpone_options\":["));
 
         set_shared_break_engine_for_tests(None);
     }

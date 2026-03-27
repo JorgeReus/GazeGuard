@@ -32,8 +32,25 @@ impl DisableOption {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PostponeOption {
+    pub duration: u64,
+    pub unit: String,
+    #[serde(skip)]
+    pub seconds: u64,
+}
+
 fn default_skip_limit() -> u8 {
     2
+}
+
+fn default_postpone_duration() -> u64 {
+    5
+}
+
+fn default_postpone_unit() -> String {
+    "minutes".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +61,9 @@ pub struct BreakEngineConfig {
     pub pre_break_warning_time: u64,
     pub short_break_duration: u64,
     pub random_order: bool,
+    pub allow_postpone: bool,
+    pub postpone_duration_seconds: u64,
+    pub postpone_options: Vec<PostponeOption>,
     pub strict_break: bool,
     pub consecutive_skip_limit: u8,
     pub idle_time: u64,
@@ -56,6 +76,14 @@ pub struct BreakEngineConfig {
 struct RawBreakEngineConfig {
     #[serde(default)]
     random_order: bool,
+    #[serde(default)]
+    allow_postpone: bool,
+    #[serde(default = "default_postpone_duration")]
+    postpone_duration: u64,
+    #[serde(default = "default_postpone_unit")]
+    postpone_unit: String,
+    #[serde(default)]
+    postpone_options: Vec<PostponeOption>,
     short_break_interval: u64,
     long_break_interval: u64,
     long_break_duration: u64,
@@ -101,6 +129,16 @@ impl BreakEngineConfig {
             pre_break_warning_time: raw.pre_break_warning_time,
             short_break_duration: raw.short_break_duration,
             random_order: raw.random_order,
+            allow_postpone: raw.allow_postpone,
+            postpone_duration_seconds: postpone_seconds(raw.postpone_duration, &raw.postpone_unit),
+            postpone_options: raw
+                .postpone_options
+                .into_iter()
+                .map(|option| PostponeOption {
+                    seconds: postpone_seconds(option.duration, &option.unit),
+                    ..option
+                })
+                .collect(),
             strict_break: raw.strict_break,
             consecutive_skip_limit: raw.consecutive_skip_limit,
             idle_time: raw.idle_time,
@@ -139,6 +177,7 @@ pub struct EngineStatus {
     pub postpone_reason: Option<String>,
     pub current_break: Option<BreakInfo>,
     pub can_skip: bool,
+    pub can_postpone: bool,
     pub skip_limit_reached: bool,
     pub disable_options: Vec<DisableOption>,
 }
@@ -246,6 +285,7 @@ impl BreakEngine {
             postpone_reason: self.postpone_reason().map(str::to_string),
             current_break: self.current_break.clone(),
             can_skip: self.current_break.is_some() && skip_allowed,
+            can_postpone: self.current_break.is_some() && self.config.allow_postpone,
             skip_limit_reached,
             disable_options: self.config.disable_options.clone(),
         }
@@ -321,6 +361,47 @@ impl BreakEngine {
         }
         self.finish_break_cycle();
         self.consecutive_skips = 0;
+        Ok(self.status())
+    }
+
+    pub fn postpone_break(&mut self) -> Result<EngineStatus, String> {
+        self.postpone_break_with_override(None)
+    }
+
+    pub fn postpone_break_with_override(
+        &mut self,
+        override_seconds: Option<u64>,
+    ) -> Result<EngineStatus, String> {
+        self.sync_with_clock();
+        if !matches!(self.phase, EnginePhase::OnBreak) {
+            return Err("No active break to postpone.".into());
+        }
+        if !self.config.allow_postpone {
+            return Err("Postpone is disabled.".into());
+        }
+        let postpone_seconds = match override_seconds {
+            Some(seconds) => {
+                if !self.config.postpone_options.is_empty()
+                    && !self
+                        .config
+                        .postpone_options
+                        .iter()
+                        .any(|option| option.seconds == seconds)
+                {
+                    return Err("Selected postpone duration is not configured.".into());
+                }
+                seconds
+            }
+            None => self.config.postpone_duration_seconds,
+        };
+
+        self.phase = EnginePhase::Running;
+        self.current_break = None;
+        self.break_remaining = 0;
+        self.warning_remaining = 0;
+        self.work_remaining = postpone_seconds;
+        self.last_synced_at = Some(Instant::now());
+        self.reconcile();
         Ok(self.status())
     }
 
@@ -587,6 +668,13 @@ impl BreakEngine {
     }
 }
 
+fn postpone_seconds(duration: u64, unit: &str) -> u64 {
+    match unit {
+        "hour" | "hours" => duration.saturating_mul(60 * 60),
+        _ => duration.saturating_mul(60),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{BreakEngine, BreakEngineConfig, BreakKind, EnginePhase};
@@ -602,6 +690,12 @@ mod tests {
         assert_eq!(config.no_of_short_breaks_per_long_break, 4);
         assert_eq!(config.idle_time, 5);
         assert!(!config.strict_break);
+        assert!(config.allow_postpone);
+        assert_eq!(config.postpone_duration_seconds, 5 * 60);
+        assert_eq!(config.postpone_options.len(), 3);
+        assert_eq!(config.postpone_options[0].seconds, 5 * 60);
+        assert_eq!(config.postpone_options[1].seconds, 10 * 60);
+        assert_eq!(config.postpone_options[2].seconds, 15 * 60);
         assert_eq!(config.short_breaks.len(), 7);
         assert_eq!(config.long_breaks.len(), 2);
         assert_eq!(config.disable_options.len(), 4);
@@ -734,6 +828,66 @@ mod tests {
 
         engine.begin_break_now();
         engine.skip_break().unwrap();
+    }
+
+    #[test]
+    fn postpone_break_is_rejected_when_config_disables_it() {
+        let mut config = BreakEngineConfig::load();
+        config.allow_postpone = false;
+
+        let mut engine = BreakEngine::new(config);
+        engine.start();
+        engine.begin_break_now();
+
+        let error = engine.postpone_break().unwrap_err();
+
+        assert!(error.contains("Postpone"));
+    }
+
+    #[test]
+    fn postpone_break_reschedules_work_without_consuming_skip() {
+        let mut config = BreakEngineConfig::load();
+        config.allow_postpone = true;
+        config.postpone_duration_seconds = 5 * 60;
+        config.postpone_options = vec![super::PostponeOption {
+            duration: 5,
+            unit: "minutes".into(),
+            seconds: 5 * 60,
+        }];
+
+        let mut engine = BreakEngine::new(config);
+        engine.start();
+        engine.begin_break_now();
+
+        let status = engine.postpone_break_with_override(None).unwrap();
+
+        assert!(matches!(status.phase, EnginePhase::Running));
+        assert_eq!(status.seconds_remaining, Some(5 * 60));
+        assert!(status.current_break.is_none());
+        assert!(!status.can_skip);
+        assert!(!status.can_postpone);
+    }
+
+    #[test]
+    fn postpone_break_rejects_unconfigured_override() {
+        let mut config = BreakEngineConfig::load();
+        config.allow_postpone = true;
+        config.postpone_duration_seconds = 5 * 60;
+        config.postpone_options = vec![super::PostponeOption {
+            duration: 5,
+            unit: "minutes".into(),
+            seconds: 5 * 60,
+        }];
+
+        let mut engine = BreakEngine::new(config);
+        engine.start();
+        engine.begin_break_now();
+
+        let error = engine
+            .postpone_break_with_override(Some(10 * 60))
+            .unwrap_err();
+
+        assert!(error.contains("configured"));
     }
 
     #[test]

@@ -15,6 +15,8 @@ class BreakDeliveryCoordinatorTest {
             message = "Break starts in 10 seconds",
             shouldShowNotification = true,
             shouldShowOverlay = false,
+            canPostpone = false,
+            postponeOptions = emptyList(),
         )
 
         val first = coordinator.computeEffects(
@@ -45,6 +47,8 @@ class BreakDeliveryCoordinatorTest {
                 message = "Break starts in 10 seconds",
                 shouldShowNotification = true,
                 shouldShowOverlay = false,
+                canPostpone = false,
+                postponeOptions = emptyList(),
             ),
             appVisible = false,
             overlayAllowed = true,
@@ -57,6 +61,8 @@ class BreakDeliveryCoordinatorTest {
                 message = "Take a Break",
                 shouldShowNotification = true,
                 shouldShowOverlay = true,
+                canPostpone = false,
+                postponeOptions = emptyList(),
             ),
             appVisible = false,
             overlayAllowed = true,

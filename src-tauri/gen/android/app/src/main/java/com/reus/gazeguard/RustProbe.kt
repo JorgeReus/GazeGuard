@@ -7,5 +7,6 @@ object RustProbe {
 
     external fun debugEnginePhase(): String
     external fun forceBreakNow(): String
+    external fun postponeBreak(seconds: Long): String
     external fun breakOverlaySnapshot(): String
 }
