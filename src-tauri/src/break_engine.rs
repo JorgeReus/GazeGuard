@@ -533,8 +533,8 @@ mod tests {
     fn loads_yaml_defaults_shape() {
         let config = BreakEngineConfig::load();
 
-        assert_eq!(config.break_interval, 15);
-        assert_eq!(config.pre_break_warning_time, 10);
+        assert_eq!(config.break_interval, 1);
+        assert_eq!(config.pre_break_warning_time, 5);
         assert_eq!(config.short_break_duration, 15);
         assert_eq!(config.long_break_duration, 60);
         assert_eq!(config.no_of_short_breaks_per_long_break, 4);
@@ -575,12 +575,14 @@ mod tests {
     fn enters_warning_before_break_and_then_starts_break() {
         let mut engine = BreakEngine::new(BreakEngineConfig::load());
         engine.start();
+        let work_seconds = engine.config.break_interval * 60;
+        let warning_seconds = engine.config.pre_break_warning_time;
 
-        let status = engine.advance_by(15 * 60 - 10);
+        let status = engine.advance_by(work_seconds - warning_seconds);
         assert!(matches!(status.phase, EnginePhase::Warning));
-        assert_eq!(status.seconds_remaining, Some(10));
+        assert_eq!(status.seconds_remaining, Some(warning_seconds));
 
-        let status = engine.advance_by(10);
+        let status = engine.advance_by(warning_seconds);
         assert!(matches!(status.phase, EnginePhase::OnBreak));
         assert!(status.current_break.is_some());
     }
@@ -632,49 +634,57 @@ mod tests {
 
     #[test]
     fn idle_and_fullscreen_postpone_warning_and_break() {
-        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        let mut config = BreakEngineConfig::load();
+        config.idle_time = 0;
+        let mut engine = BreakEngine::new(config);
         engine.start();
         engine.set_idle(true);
+        let work_seconds = engine.config.break_interval * 60;
+        let warning_seconds = engine.config.pre_break_warning_time;
 
-        let status = engine.advance_by(15 * 60);
+        let status = engine.advance_by(work_seconds);
         assert!(matches!(status.phase, EnginePhase::Running));
         assert_eq!(status.postpone_reason.as_deref(), Some("idle"));
-        assert_eq!(status.seconds_remaining, Some(10));
+        assert_eq!(status.seconds_remaining, Some(warning_seconds));
 
         engine.set_idle(false);
         let status = engine.status();
         assert!(matches!(status.phase, EnginePhase::Warning));
 
         engine.set_fullscreen(true);
-        let status = engine.advance_by(10);
+        let status = engine.advance_by(warning_seconds);
         assert!(matches!(status.phase, EnginePhase::Warning));
         assert_eq!(status.postpone_reason.as_deref(), Some("fullscreen"));
 
         engine.set_fullscreen(false);
-        let status = engine.advance_by(10);
+        let status = engine.advance_by(warning_seconds);
         assert!(matches!(status.phase, EnginePhase::OnBreak));
     }
 
     #[test]
     fn idle_only_postpones_after_idle_threshold() {
         let mut config = BreakEngineConfig::load();
+        config.break_interval = 4;
         config.idle_time = 2;
         let mut engine = BreakEngine::new(config);
         engine.start();
-        engine.advance_by((15 * 60) - 130);
+        let work_seconds = engine.config.break_interval * 60;
+        let warning_seconds = engine.config.pre_break_warning_time;
+        let threshold_seconds = 2 * 60;
+        engine.advance_by(work_seconds.saturating_sub(threshold_seconds + warning_seconds + 1));
 
         engine.set_idle(true);
-        engine.advance_by((2 * 60) - 1);
+        engine.advance_by(threshold_seconds - 1);
         let status = engine.status();
         assert!(matches!(status.phase, EnginePhase::Running));
         assert_eq!(status.postpone_reason, None);
-        assert_eq!(status.seconds_remaining, Some(11));
+        assert_eq!(status.seconds_remaining, Some(warning_seconds + 2));
 
         engine.advance_by(1);
         let status = engine.status();
         assert!(matches!(status.phase, EnginePhase::Running));
         assert_eq!(status.postpone_reason.as_deref(), Some("idle"));
-        assert_eq!(status.seconds_remaining, Some(10));
+        assert_eq!(status.seconds_remaining, Some(warning_seconds + 1));
     }
 
     #[test]
@@ -707,11 +717,12 @@ mod tests {
         let mut engine = BreakEngine::new(BreakEngineConfig::load());
         engine.start();
         engine.rewind_last_sync_by(3);
+        let work_seconds = engine.config.break_interval * 60;
 
         let status = engine.status();
 
         assert!(matches!(status.phase, EnginePhase::Running));
-        assert_eq!(status.seconds_remaining, Some(15 * 60 - 3));
+        assert_eq!(status.seconds_remaining, Some(work_seconds - 3));
     }
 
     #[test]
