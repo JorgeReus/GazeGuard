@@ -661,7 +661,7 @@ mod tests {
         let snapshot = break_overlay_snapshot_for_android();
 
         assert!(snapshot.contains("\"phase\":\"on_break\""));
-        assert!(snapshot.contains("\"remaining_seconds\":60"));
+        assert!(snapshot.contains("\"remaining_seconds\":15"));
 
         set_shared_break_engine_for_tests(None);
     }

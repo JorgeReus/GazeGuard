@@ -535,7 +535,7 @@ mod tests {
 
         assert_eq!(config.break_interval, 1);
         assert_eq!(config.pre_break_warning_time, 5);
-        assert_eq!(config.short_break_duration, 60);
+        assert_eq!(config.short_break_duration, 15);
         assert_eq!(config.long_break_duration, 60);
         assert_eq!(config.no_of_short_breaks_per_long_break, 4);
         assert_eq!(config.idle_time, 5);
@@ -708,7 +708,7 @@ mod tests {
         let info = engine.begin_break_now();
 
         assert!(matches!(info.kind, BreakKind::Short));
-        assert_eq!(info.duration_seconds, 60);
+        assert_eq!(info.duration_seconds, 15);
         assert!(engine.current_break().is_some());
     }
 

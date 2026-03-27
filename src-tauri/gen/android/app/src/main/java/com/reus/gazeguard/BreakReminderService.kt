@@ -17,7 +17,8 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import org.json.JSONObject
 import java.util.Timer
 import kotlin.concurrent.schedule
@@ -58,7 +59,6 @@ class BreakReminderService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand: ${intent?.action}")
-        logRustProbePhase("onStartCommand")
         when (intent?.action) {
             ACTION_START -> {
                 Log.d(TAG, "Starting service")
@@ -113,7 +113,6 @@ class BreakReminderService : Service() {
 
     private fun triggerBreak() {
         Log.d(TAG, "Triggering break")
-        logBreakAlertCapability("triggerBreak")
         forceRustBreakState()
         if (MainActivity.isAppVisible()) {
             val intent = Intent(this, BreakReceiver::class.java).apply {
@@ -231,15 +230,6 @@ class BreakReminderService : Service() {
         }
     }
 
-    private fun logRustProbePhase(source: String) {
-        try {
-            val phase = RustProbe.debugEnginePhase()
-            Log.d(TAG, "Rust probe phase from $source: $phase")
-        } catch (e: Throwable) {
-            Log.e(TAG, "Rust probe failed from $source", e)
-        }
-    }
-
     private fun forceRustBreakState() {
         try {
             val phase = RustProbe.forceBreakNow()
@@ -268,6 +258,7 @@ class BreakReminderService : Service() {
                     WindowManager.LayoutParams.MATCH_PARENT,
                     type,
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                         WindowManager.LayoutParams.FLAG_FULLSCREEN or
                         WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
@@ -277,8 +268,12 @@ class BreakReminderService : Service() {
                 }
 
                 val root = FrameLayout(this).apply {
-                    setBackgroundColor(Color.argb(245, 0, 0, 0))
+                    setBackgroundColor(Color.BLACK)
                     isClickable = true
+                    fitsSystemWindows = false
+                }
+                val bottomScrim = View(this).apply {
+                    setBackgroundColor(Color.BLACK)
                 }
                 val content = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
@@ -303,6 +298,22 @@ class BreakReminderService : Service() {
                         FrameLayout.LayoutParams.MATCH_PARENT
                     )
                 )
+                root.addView(
+                    bottomScrim,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        0,
+                        Gravity.BOTTOM
+                    )
+                )
+                ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+                    val navInsets = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+                    val layoutParams = bottomScrim.layoutParams as FrameLayout.LayoutParams
+                    layoutParams.height = navInsets.bottom
+                    bottomScrim.layoutParams = layoutParams
+                    insets
+                }
+                root.requestApplyInsets()
                 root.setOnClickListener {
                     val launchIntent = Intent(this, MainActivity::class.java).apply {
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -324,14 +335,12 @@ class BreakReminderService : Service() {
         val snapshot = runCatching { JSONObject(RustProbe.breakOverlaySnapshot()) }
             .getOrNull()
         if (snapshot == null) {
-            Log.e(TAG, "Overlay snapshot unavailable")
             hideBreakOverlay()
             return
         }
 
         val phase = snapshot.optString("phase")
         if (phase != "on_break") {
-            Log.d(TAG, "Overlay closing because phase=$phase")
             hideBreakOverlay()
             return
         }
@@ -356,28 +365,6 @@ class BreakReminderService : Service() {
         val minutes = totalSeconds / 60
         val seconds = totalSeconds % 60
         return "%d:%02d".format(minutes, seconds)
-    }
-
-    private fun logBreakAlertCapability(source: String) {
-        val notificationsEnabled = NotificationManagerCompat.from(this).areNotificationsEnabled()
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val channel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            notificationManager.getNotificationChannel(BREAK_CHANNEL_ID)
-        } else {
-            null
-        }
-        val channelImportance = channel?.importance ?: -1
-        val fullScreenAllowed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            notificationManager.canUseFullScreenIntent()
-        } else {
-            true
-        }
-
-        Log.d(
-            TAG,
-            "Break alert capability from $source: notificationsEnabled=$notificationsEnabled, " +
-                "fullScreenAllowed=$fullScreenAllowed, channelImportance=$channelImportance"
-        )
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
