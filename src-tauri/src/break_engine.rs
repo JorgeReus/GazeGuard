@@ -43,6 +43,7 @@ pub struct BreakEngineConfig {
     pub no_of_short_breaks_per_long_break: u8,
     pub pre_break_warning_time: u64,
     pub short_break_duration: u64,
+    pub random_order: bool,
     pub strict_break: bool,
     pub consecutive_skip_limit: u8,
     pub idle_time: u64,
@@ -53,6 +54,8 @@ pub struct BreakEngineConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct RawBreakEngineConfig {
+    #[serde(default)]
+    random_order: bool,
     short_break_interval: u64,
     long_break_interval: u64,
     long_break_duration: u64,
@@ -97,6 +100,7 @@ impl BreakEngineConfig {
             no_of_short_breaks_per_long_break: breaks_per_long,
             pre_break_warning_time: raw.pre_break_warning_time,
             short_break_duration: raw.short_break_duration,
+            random_order: raw.random_order,
             strict_break: raw.strict_break,
             consecutive_skip_limit: raw.consecutive_skip_limit,
             idle_time: raw.idle_time,
@@ -150,18 +154,21 @@ pub struct BreakEngine {
     shorts_since_long: u8,
     next_short_index: usize,
     next_long_index: usize,
+    short_break_order: Vec<usize>,
+    long_break_order: Vec<usize>,
     current_break: Option<BreakInfo>,
     idle_active: bool,
     idle_elapsed_seconds: u64,
     fullscreen: bool,
     last_synced_at: Option<Instant>,
     consecutive_skips: u8,
+    shuffle_rng: fastrand::Rng,
 }
 
 impl BreakEngine {
     pub fn new(config: BreakEngineConfig) -> Self {
         let interval = config.break_interval.saturating_mul(60);
-        Self {
+        let mut engine = Self {
             config,
             phase: EnginePhase::Stopped,
             work_remaining: interval,
@@ -171,13 +178,18 @@ impl BreakEngine {
             shorts_since_long: 0,
             next_short_index: 0,
             next_long_index: 0,
+            short_break_order: Vec::new(),
+            long_break_order: Vec::new(),
             current_break: None,
             idle_active: false,
             idle_elapsed_seconds: 0,
             fullscreen: false,
             last_synced_at: None,
             consecutive_skips: 0,
-        }
+            shuffle_rng: fastrand::Rng::new(),
+        };
+        engine.reset_template_orders();
+        engine
     }
 
     pub fn start(&mut self) -> EngineStatus {
@@ -325,6 +337,12 @@ impl BreakEngine {
         if let Some(last_synced_at) = self.last_synced_at {
             self.last_synced_at = Some(last_synced_at - Duration::from_secs(seconds));
         }
+    }
+
+    #[cfg(test)]
+    pub fn set_random_seed_for_tests(&mut self, seed: u64) {
+        self.shuffle_rng = fastrand::Rng::with_seed(seed);
+        self.reset_template_orders();
     }
 
     fn reconcile(&mut self) {
@@ -507,8 +525,8 @@ impl BreakEngine {
                 if self.config.short_breaks.is_empty() {
                     None
                 } else {
-                    let template = self.config.short_breaks[self.next_short_index].name.clone();
-                    self.next_short_index = (self.next_short_index + 1) % self.config.short_breaks.len();
+                    let index = self.current_template_index(BreakKind::Short)?;
+                    let template = self.config.short_breaks[index].name.clone();
                     Some(template)
                 }
             }
@@ -516,12 +534,56 @@ impl BreakEngine {
                 if self.config.long_breaks.is_empty() {
                     None
                 } else {
-                    let template = self.config.long_breaks[self.next_long_index].name.clone();
-                    self.next_long_index = (self.next_long_index + 1) % self.config.long_breaks.len();
+                    let index = self.current_template_index(BreakKind::Long)?;
+                    let template = self.config.long_breaks[index].name.clone();
                     Some(template)
                 }
             }
         }
+    }
+
+    fn current_template_index(&mut self, kind: BreakKind) -> Option<usize> {
+        match kind {
+            BreakKind::Short => {
+                if self.short_break_order.is_empty() {
+                    return None;
+                }
+                let index = self.short_break_order[self.next_short_index];
+                self.next_short_index += 1;
+                if self.next_short_index >= self.short_break_order.len() {
+                    self.next_short_index = 0;
+                    if self.config.random_order {
+                        self.shuffle_rng.shuffle(&mut self.short_break_order);
+                    }
+                }
+                Some(index)
+            }
+            BreakKind::Long => {
+                if self.long_break_order.is_empty() {
+                    return None;
+                }
+                let index = self.long_break_order[self.next_long_index];
+                self.next_long_index += 1;
+                if self.next_long_index >= self.long_break_order.len() {
+                    self.next_long_index = 0;
+                    if self.config.random_order {
+                        self.shuffle_rng.shuffle(&mut self.long_break_order);
+                    }
+                }
+                Some(index)
+            }
+        }
+    }
+
+    fn reset_template_orders(&mut self) {
+        self.short_break_order = (0..self.config.short_breaks.len()).collect();
+        self.long_break_order = (0..self.config.long_breaks.len()).collect();
+        if self.config.random_order {
+            self.shuffle_rng.shuffle(&mut self.short_break_order);
+            self.shuffle_rng.shuffle(&mut self.long_break_order);
+        }
+        self.next_short_index = 0;
+        self.next_long_index = 0;
     }
 }
 
@@ -550,7 +612,9 @@ mod tests {
 
     #[test]
     fn computes_break_distribution_and_rotation() {
-        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        let mut config = BreakEngineConfig::load();
+        config.random_order = false;
+        let mut engine = BreakEngine::new(config);
         engine.start();
 
         let first = engine.debug_force_break();
@@ -569,6 +633,46 @@ mod tests {
         assert_eq!(fourth.template_name.as_deref(), Some("Rotate your eyes in counterclockwise direction"));
         assert_eq!(fifth.template_name.as_deref(), Some("Walk for a while"));
         assert!(matches!(fifth.kind, BreakKind::Long));
+    }
+
+    #[test]
+    fn random_order_shuffles_short_break_templates_when_enabled() {
+        let mut config = BreakEngineConfig::load();
+        config.short_breaks = vec![
+            super::BreakTemplate { name: "A".into() },
+            super::BreakTemplate { name: "B".into() },
+            super::BreakTemplate { name: "C".into() },
+            super::BreakTemplate { name: "D".into() },
+        ];
+        config.long_breaks = vec![super::BreakTemplate { name: "L".into() }];
+        config.no_of_short_breaks_per_long_break = 99;
+        config.random_order = true;
+
+        let mut engine = BreakEngine::new(config);
+        engine.set_random_seed_for_tests(7);
+        engine.start();
+
+        let first = engine.debug_force_break();
+        engine.complete_break().unwrap();
+        let second = engine.debug_force_break();
+        engine.complete_break().unwrap();
+        let third = engine.debug_force_break();
+        engine.complete_break().unwrap();
+        let fourth = engine.debug_force_break();
+
+        let seen = vec![
+            first.template_name.unwrap(),
+            second.template_name.unwrap(),
+            third.template_name.unwrap(),
+            fourth.template_name.unwrap(),
+        ];
+
+        assert_ne!(seen, vec!["A", "B", "C", "D"]);
+        assert_eq!(seen.len(), 4);
+        assert!(seen.contains(&"A".to_string()));
+        assert!(seen.contains(&"B".to_string()));
+        assert!(seen.contains(&"C".to_string()));
+        assert!(seen.contains(&"D".to_string()));
     }
 
     #[test]
