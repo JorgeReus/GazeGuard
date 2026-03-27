@@ -30,6 +30,8 @@ struct AndroidBreakOverlaySnapshot {
     phase: String,
     remaining_seconds: u64,
     message: String,
+    should_show_notification: bool,
+    should_show_overlay: bool,
 }
 
 fn shared_break_engine_slot() -> &'static Mutex<Option<SharedBreakEngine>> {
@@ -91,7 +93,9 @@ fn break_overlay_snapshot_for_android() -> String {
         return json!({
             "phase": "unavailable",
             "remaining_seconds": 0,
-            "message": "Break unavailable"
+            "message": "Break unavailable",
+            "should_show_notification": false,
+            "should_show_overlay": false
         })
         .to_string();
     };
@@ -103,27 +107,43 @@ fn break_overlay_snapshot_for_android() -> String {
             let status = guard.status();
             let phase = engine_phase_label(&status.phase).to_string();
             let remaining_seconds = status.seconds_remaining.unwrap_or(0);
-            let message = status
-                .current_break
-                .as_ref()
-                .map(|info| {
-                    info.template_name.clone().unwrap_or_else(|| match info.kind {
-                        break_engine::BreakKind::Long => "Take a Long Break".to_string(),
-                        break_engine::BreakKind::Short => "Take a Short Break".to_string(),
-                    })
-                })
-                .unwrap_or_else(|| "Break ended".to_string());
+            let (message, should_show_notification, should_show_overlay) = match status.phase {
+                EnginePhase::Warning => (
+                    format!("Break starts in {remaining_seconds} seconds"),
+                    true,
+                    false,
+                ),
+                EnginePhase::OnBreak => (
+                    status
+                        .current_break
+                        .as_ref()
+                        .map(|info| {
+                            info.template_name.clone().unwrap_or_else(|| match info.kind {
+                                break_engine::BreakKind::Long => "Take a Long Break".to_string(),
+                                break_engine::BreakKind::Short => "Take a Short Break".to_string(),
+                            })
+                        })
+                        .unwrap_or_else(|| "Take a Break".to_string()),
+                    true,
+                    true,
+                ),
+                _ => ("Break ended".to_string(), false, false),
+            };
 
             serde_json::to_string(&AndroidBreakOverlaySnapshot {
                 phase,
                 remaining_seconds,
                 message,
+                should_show_notification,
+                should_show_overlay,
             })
             .unwrap_or_else(|_| {
                 json!({
                     "phase": "error",
                     "remaining_seconds": 0,
-                    "message": "Break unavailable"
+                    "message": "Break unavailable",
+                    "should_show_notification": false,
+                    "should_show_overlay": false
                 })
                 .to_string()
             })
@@ -132,7 +152,9 @@ fn break_overlay_snapshot_for_android() -> String {
             json!({
                 "phase": "poisoned",
                 "remaining_seconds": 0,
-                "message": "Break unavailable"
+                "message": "Break unavailable",
+                "should_show_notification": false,
+                "should_show_overlay": false
             })
             .to_string()
         })
@@ -662,6 +684,30 @@ mod tests {
 
         assert!(snapshot.contains("\"phase\":\"on_break\""));
         assert!(snapshot.contains("\"remaining_seconds\":15"));
+
+        set_shared_break_engine_for_tests(None);
+    }
+
+    #[test]
+    fn android_snapshot_reports_warning_delivery_state() {
+        let engine = create_break_engine();
+        set_shared_break_engine_for_tests(Some(engine.clone()));
+
+        {
+            let mut guard = engine.lock().unwrap();
+            let work_seconds = guard.config().break_interval * 60;
+            let warning_seconds = guard.config().pre_break_warning_time;
+            let status = guard.advance_by(work_seconds - warning_seconds);
+            assert!(matches!(status.phase, EnginePhase::Warning));
+        }
+
+        let snapshot = break_overlay_snapshot_for_android();
+
+        assert!(snapshot.contains("\"phase\":\"warning\""));
+        assert!(snapshot.contains("\"remaining_seconds\":10"));
+        assert!(snapshot.contains("\"should_show_notification\":true"));
+        assert!(snapshot.contains("\"should_show_overlay\":false"));
+        assert!(snapshot.contains("Break starts in 10 seconds"));
 
         set_shared_break_engine_for_tests(None);
     }

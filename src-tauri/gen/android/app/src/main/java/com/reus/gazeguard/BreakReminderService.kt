@@ -19,26 +19,23 @@ import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
-import org.json.JSONObject
-import java.util.Timer
-import kotlin.concurrent.schedule
 
 class BreakReminderService : Service() {
-    private var timer: Timer? = null
-    private var breakIntervalMillis = 15 * 60 * 1000L
-    private var preBreakWarningMillis = 0L
     private val SERVICE_CHANNEL_ID = "BreakReminderServiceChannel"
     private val WARNING_CHANNEL_ID = "BreakReminderWarningChannel"
     private val BREAK_CHANNEL_ID = "BreakReminderBreakChannel"
     private val NOTIFICATION_ID = 1
     private val TAG = "BreakReminderService"
-    private val overlayHandler = Handler(Looper.getMainLooper())
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val deliveryCoordinator = BreakDeliveryCoordinator()
+    @Volatile
+    private var pollingActive = false
     private var overlayView: View? = null
     private var overlayMessageView: TextView? = null
     private var overlayTimerView: TextView? = null
-    private val overlayRefreshRunnable = object : Runnable {
+    private val rustDeliveryPollRunnable = object : Runnable {
         override fun run() {
-            refreshOverlayFromRust()
+            pollRustDeliveryState()
         }
     }
 
@@ -51,9 +48,6 @@ class BreakReminderService : Service() {
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "Service onCreate")
-        val schedule = BreakEngineConfig.loadSchedule(this)
-        breakIntervalMillis = schedule.breakIntervalMillis
-        preBreakWarningMillis = schedule.preBreakWarningMillis
         createNotificationChannel()
     }
 
@@ -63,11 +57,11 @@ class BreakReminderService : Service() {
             ACTION_START -> {
                 Log.d(TAG, "Starting service")
                 startForeground(NOTIFICATION_ID, createNotification("GazeGuard is running", NotificationKind.Service))
-                startBreakTimer()
+                startRustDeliveryPolling()
             }
             ACTION_STOP -> {
                 Log.d(TAG, "Stopping service")
-                stopBreakTimer()
+                stopRustDeliveryPolling()
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                     stopForeground(STOP_FOREGROUND_REMOVE)
                 } else {
@@ -80,67 +74,73 @@ class BreakReminderService : Service() {
         return START_STICKY
     }
 
-    private fun startBreakTimer() {
-        Log.d(TAG, "Starting break timer with interval: $breakIntervalMillis ms")
-        stopBreakTimer()
-        timer = Timer("break-reminder-cycle", true)
-        scheduleNextCycle()
+    private fun startRustDeliveryPolling() {
+        Log.d(TAG, "Starting Rust delivery polling")
+        stopRustDeliveryPolling()
+        pollingActive = true
+        deliveryCoordinator.reset()
+        mainHandler.post(rustDeliveryPollRunnable)
     }
 
-    private fun stopBreakTimer() {
-        Log.d(TAG, "Stopping break timer")
-        timer?.cancel()
-        timer = null
+    private fun stopRustDeliveryPolling() {
+        Log.d(TAG, "Stopping Rust delivery polling")
+        pollingActive = false
+        mainHandler.removeCallbacks(rustDeliveryPollRunnable)
+        deliveryCoordinator.reset()
+        hideBreakOverlay()
     }
 
-    private fun scheduleNextCycle() {
-        val cycleTimer = timer ?: return
-        val warningDelay = (breakIntervalMillis - preBreakWarningMillis).coerceAtLeast(0L)
+    private fun pollRustDeliveryState() {
+        try {
+            val snapshot = AndroidBreakDeliverySnapshot.fromRustJson(RustProbe.breakOverlaySnapshot())
+            val effects = deliveryCoordinator.computeEffects(
+                snapshot = snapshot,
+                appVisible = MainActivity.isAppVisible(),
+                overlayAllowed = canDrawBreakOverlay(),
+            )
 
-        if (preBreakWarningMillis > 0L && warningDelay > 0L) {
-            cycleTimer.schedule(warningDelay) {
-                Log.d(TAG, "Warning timer triggered")
-                showWarningNotification()
+            if (effects.showWarningNotification) {
+                Log.d(TAG, "Rust warning phase detected")
+                showWarningNotification(snapshot.message)
             }
-        }
 
-        cycleTimer.schedule(breakIntervalMillis) {
-            Log.d(TAG, "Break timer triggered")
-            triggerBreak()
-            scheduleNextCycle()
+            if (effects.showBreakNotification) {
+                Log.d(TAG, "Rust break phase detected")
+                showBreakNotification(snapshot.message)
+            }
+
+            if (effects.sendBreakBroadcast) {
+                val intent = Intent(this, BreakReceiver::class.java).apply {
+                    action = ACTION_TRIGGER_BREAK
+                }
+                sendBroadcast(intent)
+                Log.d(TAG, "Broadcast sent while app is visible")
+            }
+
+            if (effects.showBreakOverlay) {
+                showBreakOverlay(snapshot)
+            } else if (effects.hideBreakOverlay) {
+                hideBreakOverlay()
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "Rust delivery poll failed", e)
+            hideBreakOverlay()
+        } finally {
+            mainHandler.removeCallbacks(rustDeliveryPollRunnable)
+            if (pollingActive) {
+                mainHandler.postDelayed(rustDeliveryPollRunnable, 1000L)
+            }
         }
     }
 
-    private fun triggerBreak() {
-        Log.d(TAG, "Triggering break")
-        forceRustBreakState()
-        if (MainActivity.isAppVisible()) {
-            val intent = Intent(this, BreakReceiver::class.java).apply {
-                action = ACTION_TRIGGER_BREAK
-            }
-            sendBroadcast(intent)
-            Log.d(TAG, "Broadcast sent while app is visible")
-        } else {
-            if (canDrawBreakOverlay()) {
-                Log.d(TAG, "App is backgrounded; showing break overlay")
-                showBreakOverlay()
-            } else {
-                Log.d(TAG, "App is backgrounded; relying on break notification instead of activity launch")
-            }
-        }
-
-        val notification = createNotification("Time for a break!", NotificationKind.Break)
+    private fun showBreakNotification(text: String) {
+        val notification = createNotification(text, NotificationKind.Break)
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(NOTIFICATION_ID + 1, notification)
         Log.d(TAG, "Break notification shown")
     }
 
-    private fun showWarningNotification() {
-        val text = if (preBreakWarningMillis >= 1000L) {
-            "Break starts in ${preBreakWarningMillis / 1000L} seconds"
-        } else {
-            "Break is coming up"
-        }
+    private fun showWarningNotification(text: String) {
         val notification = createNotification(text, NotificationKind.Warning)
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(NOTIFICATION_ID + 2, notification)
@@ -230,21 +230,12 @@ class BreakReminderService : Service() {
         }
     }
 
-    private fun forceRustBreakState() {
-        try {
-            val phase = RustProbe.forceBreakNow()
-            Log.d(TAG, "Rust forceBreakNow result: $phase")
-        } catch (e: Throwable) {
-            Log.e(TAG, "Rust forceBreakNow failed", e)
-        }
-    }
-
     private fun canDrawBreakOverlay(): Boolean {
         return Settings.canDrawOverlays(this)
     }
 
-    private fun showBreakOverlay() {
-        overlayHandler.post {
+    private fun showBreakOverlay(snapshot: AndroidBreakDeliverySnapshot) {
+        mainHandler.post {
             if (overlayView == null) {
                 val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
                 val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -326,33 +317,12 @@ class BreakReminderService : Service() {
                 overlayMessageView = message
                 overlayTimerView = timer
             }
-
-            refreshOverlayFromRust()
+            overlayMessageView?.text = snapshot.message
+            overlayTimerView?.text = formatOverlayTime(snapshot.remainingSeconds)
         }
-    }
-
-    private fun refreshOverlayFromRust() {
-        val snapshot = runCatching { JSONObject(RustProbe.breakOverlaySnapshot()) }
-            .getOrNull()
-        if (snapshot == null) {
-            hideBreakOverlay()
-            return
-        }
-
-        val phase = snapshot.optString("phase")
-        if (phase != "on_break") {
-            hideBreakOverlay()
-            return
-        }
-
-        overlayMessageView?.text = snapshot.optString("message", "Take a Break")
-        overlayTimerView?.text = formatOverlayTime(snapshot.optLong("remaining_seconds", 0))
-        overlayHandler.removeCallbacks(overlayRefreshRunnable)
-        overlayHandler.postDelayed(overlayRefreshRunnable, 1000)
     }
 
     private fun hideBreakOverlay() {
-        overlayHandler.removeCallbacks(overlayRefreshRunnable)
         val view = overlayView ?: return
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         runCatching { windowManager.removeView(view) }
@@ -373,6 +343,6 @@ class BreakReminderService : Service() {
         super.onDestroy()
         Log.d(TAG, "Service onDestroy")
         hideBreakOverlay()
-        stopBreakTimer()
+        stopRustDeliveryPolling()
     }
 }

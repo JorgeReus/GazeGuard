@@ -533,8 +533,8 @@ mod tests {
     fn loads_yaml_defaults_shape() {
         let config = BreakEngineConfig::load();
 
-        assert_eq!(config.break_interval, 1);
-        assert_eq!(config.pre_break_warning_time, 5);
+        assert_eq!(config.break_interval, 15);
+        assert_eq!(config.pre_break_warning_time, 10);
         assert_eq!(config.short_break_duration, 15);
         assert_eq!(config.long_break_duration, 60);
         assert_eq!(config.no_of_short_breaks_per_long_break, 4);
