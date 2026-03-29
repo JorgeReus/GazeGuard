@@ -4,10 +4,12 @@ mod break_engine;
 
 use serde::Serialize;
 use serde_json::json;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 use std::sync::{Arc, Mutex, OnceLock};
-use break_engine::{BreakEngine, BreakEngineConfig, BreakInfo, DisableOption, EnginePhase, EngineStatus, PostponeOption};
+use break_engine::{BreakEngine, BreakEngineConfig, BreakEngineSnapshot, BreakInfo, DisableOption, EnginePhase, EngineStatus, PostponeOption};
 use tauri::Manager;
 use tauri::State;
 
@@ -17,6 +19,8 @@ use tauri::{menu::{Menu, MenuItem}, tray::TrayIconBuilder};
 type SharedBreakEngine = Arc<Mutex<BreakEngine>>;
 
 static SHARED_BREAK_ENGINE: OnceLock<Mutex<Option<SharedBreakEngine>>> = OnceLock::new();
+static SNAPSHOT_APP_DATA_DIR: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+const SNAPSHOT_FILE_NAME: &str = "break-engine-snapshot.json";
 
 #[derive(Debug, Serialize)]
 struct BreakSchedule {
@@ -41,14 +45,31 @@ fn shared_break_engine_slot() -> &'static Mutex<Option<SharedBreakEngine>> {
     SHARED_BREAK_ENGINE.get_or_init(|| Mutex::new(None))
 }
 
+fn snapshot_app_data_dir_slot() -> &'static Mutex<Option<PathBuf>> {
+    SNAPSHOT_APP_DATA_DIR.get_or_init(|| Mutex::new(None))
+}
+
 fn register_shared_break_engine(engine: SharedBreakEngine) {
     if let Ok(mut slot) = shared_break_engine_slot().lock() {
         *slot = Some(engine);
     }
 }
 
+fn register_snapshot_app_data_dir(path: PathBuf) {
+    if let Ok(mut slot) = snapshot_app_data_dir_slot().lock() {
+        *slot = Some(path);
+    }
+}
+
 fn get_shared_break_engine() -> Option<SharedBreakEngine> {
     shared_break_engine_slot()
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+}
+
+fn get_snapshot_app_data_dir() -> Option<PathBuf> {
+    snapshot_app_data_dir_slot()
         .lock()
         .ok()
         .and_then(|slot| slot.clone())
@@ -193,12 +214,133 @@ fn set_shared_break_engine_for_tests(engine: Option<SharedBreakEngine>) {
     }
 }
 
+#[cfg(test)]
+fn set_snapshot_app_data_dir_for_tests(path: Option<PathBuf>) {
+    if let Ok(mut slot) = snapshot_app_data_dir_slot().lock() {
+        *slot = path;
+    }
+}
+
+#[cfg(test)]
+fn singleton_test_lock() -> &'static Mutex<()> {
+    static SINGLETON_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    SINGLETON_TEST_LOCK.get_or_init(|| Mutex::new(()))
+}
+
 fn create_break_engine() -> SharedBreakEngine {
-    let mut engine = BreakEngine::new(BreakEngineConfig::load());
-    engine.start();
-    let engine = Arc::new(Mutex::new(engine));
+    let engine = create_break_engine_with_config(BreakEngineConfig::load(), None, unix_now_seconds());
     register_shared_break_engine(engine.clone());
     engine
+}
+
+fn snapshot_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join(SNAPSHOT_FILE_NAME)
+}
+
+fn unix_now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn load_snapshot(snapshot_file: &Path) -> Result<Option<BreakEngineSnapshot>, String> {
+    let contents = match fs::read_to_string(snapshot_file) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+
+    serde_json::from_str(&contents)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn load_engine_from_disk(
+    config: &BreakEngineConfig,
+    app_data_dir: &Path,
+    now_unix_seconds: u64,
+) -> Option<BreakEngine> {
+    if !config.persist_state {
+        return None;
+    }
+
+    let snapshot_file = snapshot_path(app_data_dir);
+    let snapshot = match load_snapshot(&snapshot_file) {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => return None,
+        Err(error) => {
+            eprintln!(
+                "failed to load break engine snapshot from {}: {error}",
+                snapshot_file.display()
+            );
+            return None;
+        }
+    };
+    let elapsed_seconds = now_unix_seconds.saturating_sub(snapshot.saved_at_unix_seconds);
+    let mut engine = BreakEngine::from_snapshot(config.clone(), snapshot);
+    engine.restore_elapsed(elapsed_seconds);
+    Some(engine)
+}
+
+fn create_break_engine_with_config(
+    config: BreakEngineConfig,
+    app_data_dir: Option<&Path>,
+    now_unix_seconds: u64,
+) -> SharedBreakEngine {
+    let engine = app_data_dir
+        .and_then(|path| load_engine_from_disk(&config, path, now_unix_seconds))
+        .unwrap_or_else(|| {
+            let mut engine = BreakEngine::new(config);
+            engine.start();
+            engine
+        });
+
+    Arc::new(Mutex::new(engine))
+}
+
+#[cfg(test)]
+fn create_break_engine_for_tests(
+    config: BreakEngineConfig,
+    app_data_dir: &Path,
+    now_unix_seconds: u64,
+) -> SharedBreakEngine {
+    create_break_engine_with_config(config, Some(app_data_dir), now_unix_seconds)
+}
+
+fn save_engine_snapshot(
+    engine: &SharedBreakEngine,
+    app_data_dir: &Path,
+    now_unix_seconds: u64,
+) -> Result<(), String> {
+    let snapshot = {
+        let mut guard = engine.lock().map_err(|_| "State lock poisoned".to_string())?;
+        if !guard.config().persist_state {
+            let snapshot_file = snapshot_path(app_data_dir);
+            match fs::remove_file(snapshot_file) {
+                Ok(()) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        guard.snapshot(now_unix_seconds)
+    };
+
+    fs::create_dir_all(app_data_dir).map_err(|error| error.to_string())?;
+    let snapshot_file = snapshot_path(app_data_dir);
+    let payload = serde_json::to_vec(&snapshot).map_err(|error| error.to_string())?;
+    fs::write(snapshot_file, payload).map_err(|error| error.to_string())
+}
+
+fn save_registered_engine_snapshot(now_unix_seconds: u64) -> Result<(), String> {
+    let Some(engine) = get_shared_break_engine() else {
+        return Ok(());
+    };
+    let Some(app_data_dir) = get_snapshot_app_data_dir() else {
+        return Ok(());
+    };
+
+    save_engine_snapshot(&engine, app_data_dir.as_path(), now_unix_seconds)
 }
 
 fn format_duration(seconds: u64) -> String {
@@ -245,6 +387,7 @@ fn refresh_tray_title(app: &tauri::AppHandle) {
 
     let _ = tray.set_title(Some(&title));
     let _ = tray.set_tooltip(Some(&title));
+    let _ = save_registered_engine_snapshot(unix_now_seconds());
 }
 
 #[cfg(not(desktop))]
@@ -278,7 +421,10 @@ fn stop_break_timer(state: State<'_, SharedBreakEngine>) -> Result<EngineStatus,
 #[tauri::command]
 fn get_engine_status(state: State<'_, SharedBreakEngine>) -> Result<EngineStatus, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
-    Ok(guard.status())
+    let status = guard.status();
+    drop(guard);
+    let _ = save_registered_engine_snapshot(unix_now_seconds());
+    Ok(status)
 }
 
 #[tauri::command]
@@ -308,7 +454,10 @@ fn set_idle_active(
 ) -> Result<EngineStatus, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
     guard.set_idle(active);
-    Ok(guard.status())
+    let status = guard.status();
+    drop(guard);
+    let _ = save_registered_engine_snapshot(unix_now_seconds());
+    Ok(status)
 }
 
 #[tauri::command]
@@ -318,7 +467,10 @@ fn set_fullscreen_active(
 ) -> Result<EngineStatus, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
     guard.set_fullscreen(active);
-    Ok(guard.status())
+    let status = guard.status();
+    drop(guard);
+    let _ = save_registered_engine_snapshot(unix_now_seconds());
+    Ok(status)
 }
 
 #[tauri::command]
@@ -348,7 +500,10 @@ fn sync_desktop_window_state(
 
     guard.set_idle(idle_active);
     guard.set_fullscreen(fullscreen_active);
-    Ok(guard.status())
+    let status = guard.status();
+    drop(guard);
+    let _ = save_registered_engine_snapshot(unix_now_seconds());
+    Ok(status)
 }
 
 #[tauri::command]
@@ -357,7 +512,10 @@ fn disable_reminders(
     seconds: u64,
 ) -> Result<EngineStatus, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
-    guard.disable_for(seconds)
+    let status = guard.disable_for(seconds)?;
+    drop(guard);
+    let _ = save_registered_engine_snapshot(unix_now_seconds());
+    Ok(status)
 }
 
 #[tauri::command]
@@ -370,6 +528,7 @@ fn skip_break(
     drop(guard);
 
     if skip_result.is_ok() {
+        let _ = save_registered_engine_snapshot(unix_now_seconds());
         close_break_window(app)
     } else {
         skip_result.map(|_| ())
@@ -385,6 +544,7 @@ fn complete_break(
     guard.complete_break()?;
 
     drop(guard);
+    let _ = save_registered_engine_snapshot(unix_now_seconds());
     close_break_window(app)
 }
 
@@ -398,6 +558,7 @@ fn postpone_break(
     guard.postpone_break_with_override(seconds)?;
 
     drop(guard);
+    let _ = save_registered_engine_snapshot(unix_now_seconds());
     close_break_window(app)
 }
 
@@ -577,8 +738,7 @@ fn close_break_window(app: tauri::AppHandle) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .manage(create_break_engine());
+        .plugin(tauri_plugin_shell::init());
 
     // Add android plugin
     // #[cfg(target_os = "android")]
@@ -588,6 +748,16 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            let app_data_dir = app.path().app_data_dir()?;
+            register_snapshot_app_data_dir(app_data_dir.clone());
+            let engine = create_break_engine_with_config(
+                BreakEngineConfig::load(),
+                Some(app_data_dir.as_path()),
+                unix_now_seconds(),
+            );
+            let _ = app.manage(engine.clone());
+            register_shared_break_engine(engine);
+
             #[cfg(not(desktop))]
             let _ = &app;
 
@@ -666,22 +836,101 @@ pub fn run() {
             postpone_break,
             complete_break
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            let _ = &app;
+            if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+                if let Err(error) = save_registered_engine_snapshot(unix_now_seconds()) {
+                    eprintln!("failed to save break engine snapshot on exit: {error}");
+                }
+            }
+        });
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        break_overlay_snapshot_for_android, create_break_engine, debug_engine_phase_for_android,
-        force_break_now_for_android,
-        format_tray_title, set_shared_break_engine_for_tests,
+        break_overlay_snapshot_for_android, create_break_engine,
+        create_break_engine_for_tests, debug_engine_phase_for_android, force_break_now_for_android,
+        save_engine_snapshot, save_registered_engine_snapshot, singleton_test_lock,
+        SharedBreakEngine, SNAPSHOT_FILE_NAME, format_tray_title, set_shared_break_engine_for_tests,
+        set_snapshot_app_data_dir_for_tests,
     };
-    use crate::break_engine::{BreakKind, EnginePhase, EngineStatus};
+    use crate::break_engine::{BreakEngine, BreakEngineConfig, BreakKind, EnginePhase, EngineStatus};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct SharedEngineTestGuard;
+
+    impl Drop for SharedEngineTestGuard {
+        fn drop(&mut self) {
+            set_shared_break_engine_for_tests(None);
+            set_snapshot_app_data_dir_for_tests(None);
+        }
+    }
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn path(&self) -> &std::path::Path {
+            self.path.as_path()
+        }
+
+        fn join(&self, child: &str) -> PathBuf {
+            self.path.join(child)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    struct SingletonTestContext {
+        _shared_engine: SharedEngineTestGuard,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    fn test_config(persist_state: bool) -> BreakEngineConfig {
+        let mut config = BreakEngineConfig::load();
+        config.break_interval = 2;
+        config.pre_break_warning_time = 5;
+        config.persist_state = persist_state;
+        config
+    }
+
+    fn unique_test_dir(name: &str) -> TestDir {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("gazeguard-{name}-{suffix}"));
+        fs::create_dir_all(&path).unwrap();
+        TestDir { path }
+    }
+
+    fn create_registered_break_engine_for_test() -> (SharedBreakEngine, SingletonTestContext) {
+        let lock = singleton_test_lock().lock().unwrap();
+        let engine = create_break_engine();
+        set_shared_break_engine_for_tests(Some(engine.clone()));
+        (
+            engine,
+            SingletonTestContext {
+                _lock: lock,
+                _shared_engine: SharedEngineTestGuard,
+            },
+        )
+    }
 
     #[test]
     fn startup_engine_is_running() {
-        let engine = create_break_engine();
+        let (engine, _shared_engine) = create_registered_break_engine_for_test();
         let mut engine = engine.lock().unwrap();
 
         assert!(matches!(engine.status().phase, EnginePhase::Running));
@@ -708,32 +957,25 @@ mod tests {
 
     #[test]
     fn android_probe_reads_the_shared_engine_phase() {
-        let engine = create_break_engine();
-        set_shared_break_engine_for_tests(Some(engine.clone()));
+        let (_engine, _shared_engine) = create_registered_break_engine_for_test();
 
         assert_eq!(debug_engine_phase_for_android(), "running");
-
-        set_shared_break_engine_for_tests(None);
     }
 
     #[test]
     fn android_probe_can_force_the_shared_engine_into_break_phase() {
-        let engine = create_break_engine();
-        set_shared_break_engine_for_tests(Some(engine.clone()));
+        let (engine, _shared_engine) = create_registered_break_engine_for_test();
 
         assert_eq!(force_break_now_for_android(), "on_break");
         let mut guard = engine.lock().unwrap();
         let status = guard.status();
         assert!(matches!(status.phase, EnginePhase::OnBreak));
         assert!(status.current_break.is_some());
-
-        set_shared_break_engine_for_tests(None);
     }
 
     #[test]
     fn android_overlay_snapshot_reports_active_break_state() {
-        let engine = create_break_engine();
-        set_shared_break_engine_for_tests(Some(engine.clone()));
+        let (_engine, _shared_engine) = create_registered_break_engine_for_test();
         assert_eq!(force_break_now_for_android(), "on_break");
 
         let snapshot = break_overlay_snapshot_for_android();
@@ -742,14 +984,11 @@ mod tests {
         assert!(snapshot.contains("\"remaining_seconds\":15"));
         assert!(snapshot.contains("\"can_postpone\":true"));
         assert!(snapshot.contains("\"postpone_options\":["));
-
-        set_shared_break_engine_for_tests(None);
     }
 
     #[test]
     fn android_snapshot_reports_warning_delivery_state() {
-        let engine = create_break_engine();
-        set_shared_break_engine_for_tests(Some(engine.clone()));
+        let (engine, _shared_engine) = create_registered_break_engine_for_test();
 
         {
             let mut guard = engine.lock().unwrap();
@@ -766,7 +1005,135 @@ mod tests {
         assert!(snapshot.contains("\"should_show_notification\":true"));
         assert!(snapshot.contains("\"should_show_overlay\":false"));
         assert!(snapshot.contains("Break starts in 10 seconds"));
+    }
 
-        set_shared_break_engine_for_tests(None);
+    #[test]
+    fn create_break_engine_restores_saved_snapshot_when_persist_state_is_enabled() {
+        let config = test_config(true);
+        let app_data_dir = unique_test_dir("restore-enabled");
+        let saved_at = 1_000;
+        let now = saved_at + 7;
+        let mut source_engine = BreakEngine::new(config.clone());
+        source_engine.start();
+        source_engine.advance_by(30);
+
+        let persisted_engine = Arc::new(Mutex::new(source_engine));
+        save_engine_snapshot(&persisted_engine, app_data_dir.path(), saved_at).unwrap();
+
+        let restored = create_break_engine_for_tests(config, app_data_dir.path(), now);
+        let mut guard = restored.lock().unwrap();
+        let status = guard.status();
+
+        assert!(matches!(status.phase, EnginePhase::Running));
+        assert_eq!(status.seconds_remaining, Some(83));
+    }
+
+    #[test]
+    fn create_break_engine_ignores_saved_snapshot_when_persist_state_is_disabled() {
+        let mut persisted_config = test_config(true);
+        let app_data_dir = unique_test_dir("restore-disabled");
+        let saved_at = 2_000;
+        let now = saved_at + 9;
+        let mut source_engine = BreakEngine::new(persisted_config.clone());
+        source_engine.start();
+        source_engine.advance_by(30);
+
+        let persisted_engine = Arc::new(Mutex::new(source_engine));
+        save_engine_snapshot(&persisted_engine, app_data_dir.path(), saved_at).unwrap();
+
+        persisted_config.persist_state = false;
+        let restored = create_break_engine_for_tests(persisted_config, app_data_dir.path(), now);
+        let mut guard = restored.lock().unwrap();
+        let status = guard.status();
+
+        assert!(matches!(status.phase, EnginePhase::Running));
+        assert_eq!(status.seconds_remaining, Some(120));
+    }
+
+    #[test]
+    fn create_break_engine_falls_back_to_fresh_state_when_snapshot_is_corrupt() {
+        let config = test_config(true);
+        let app_data_dir = unique_test_dir("restore-corrupt");
+        fs::write(app_data_dir.join(SNAPSHOT_FILE_NAME), "{not valid json").unwrap();
+
+        let restored = create_break_engine_for_tests(config, app_data_dir.path(), 3_000);
+        let mut guard = restored.lock().unwrap();
+        let status = guard.status();
+
+        assert!(matches!(status.phase, EnginePhase::Running));
+        assert_eq!(status.seconds_remaining, Some(120));
+    }
+
+    #[test]
+    fn save_engine_snapshot_removes_stale_snapshot_when_persistence_is_disabled() {
+        let app_data_dir = unique_test_dir("clear-stale-snapshot");
+        let saved_at = 4_000;
+        let snapshot_file = app_data_dir.join(SNAPSHOT_FILE_NAME);
+
+        let mut persisted_engine = BreakEngine::new(test_config(true));
+        persisted_engine.start();
+        persisted_engine.advance_by(30);
+        let persisted_engine = Arc::new(Mutex::new(persisted_engine));
+        save_engine_snapshot(&persisted_engine, app_data_dir.path(), saved_at).unwrap();
+        assert!(snapshot_file.exists());
+
+        let mut disabled_engine = BreakEngine::new(test_config(false));
+        disabled_engine.start();
+        disabled_engine.advance_by(45);
+        let disabled_engine = Arc::new(Mutex::new(disabled_engine));
+        save_engine_snapshot(&disabled_engine, app_data_dir.path(), saved_at + 5).unwrap();
+        assert!(!snapshot_file.exists());
+
+        let restored = create_break_engine_for_tests(test_config(true), app_data_dir.path(), saved_at + 10);
+        let mut guard = restored.lock().unwrap();
+        let status = guard.status();
+
+        assert!(matches!(status.phase, EnginePhase::Running));
+        assert_eq!(status.seconds_remaining, Some(120));
+    }
+
+    #[test]
+    fn save_registered_engine_snapshot_uses_registered_state() {
+        let app_data_dir = unique_test_dir("registered-shutdown-save");
+        let saved_at = 5_000;
+        let snapshot_file = app_data_dir.join(SNAPSHOT_FILE_NAME);
+
+        let mut engine = BreakEngine::new(test_config(true));
+        engine.start();
+        engine.advance_by(20);
+        let engine = Arc::new(Mutex::new(engine));
+        set_shared_break_engine_for_tests(Some(engine));
+        set_snapshot_app_data_dir_for_tests(Some(app_data_dir.path().to_path_buf()));
+
+        save_registered_engine_snapshot(saved_at).unwrap();
+
+        assert!(snapshot_file.exists());
+    }
+
+    #[test]
+    fn save_registered_engine_snapshot_updates_runtime_without_shutdown() {
+        let app_data_dir = unique_test_dir("registered-runtime-save");
+        let saved_at = 6_000;
+        let mut source_engine = BreakEngine::new(test_config(true));
+        source_engine.start();
+        source_engine.advance_by(30);
+        let engine = Arc::new(Mutex::new(source_engine));
+        set_shared_break_engine_for_tests(Some(engine.clone()));
+        set_snapshot_app_data_dir_for_tests(Some(app_data_dir.path().to_path_buf()));
+
+        save_registered_engine_snapshot(saved_at).unwrap();
+
+        {
+            let mut guard = engine.lock().unwrap();
+            guard.advance_by(10);
+        }
+        save_registered_engine_snapshot(saved_at + 10).unwrap();
+
+        let restored = create_break_engine_for_tests(test_config(true), app_data_dir.path(), saved_at + 10);
+        let mut guard = restored.lock().unwrap();
+        let status = guard.status();
+
+        assert!(matches!(status.phase, EnginePhase::Running));
+        assert_eq!(status.seconds_remaining, Some(80));
     }
 }

@@ -7,7 +7,7 @@ long_break_interval: 75
 long_break_duration: 60
 pre_break_warning_time: 10
 short_break_duration: 15
-persist_state: false
+persist_state: true
 postpone_duration: 5
 postpone_unit: minutes
 postpone_options:
@@ -17,9 +17,6 @@ postpone_options:
     unit: minutes
   - duration: 15
     unit: minutes
-shortcut_disable_time: 2
-shortcut_skip: 9
-shortcut_postpone: 65
 strict_break: false
 consecutive_skip_limit: 2
 idle_time: 5

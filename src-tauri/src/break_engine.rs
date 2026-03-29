@@ -60,6 +60,7 @@ pub struct BreakEngineConfig {
     pub no_of_short_breaks_per_long_break: u8,
     pub pre_break_warning_time: u64,
     pub short_break_duration: u64,
+    pub persist_state: bool,
     pub random_order: bool,
     pub allow_postpone: bool,
     pub postpone_duration_seconds: u64,
@@ -73,11 +74,16 @@ pub struct BreakEngineConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawBreakEngineConfig {
+    #[serde(default)]
+    meta: Option<RawConfigMeta>,
     #[serde(default)]
     random_order: bool,
     #[serde(default)]
     allow_postpone: bool,
+    #[serde(default)]
+    persist_state: bool,
     #[serde(default = "default_postpone_duration")]
     postpone_duration: u64,
     #[serde(default = "default_postpone_unit")]
@@ -102,6 +108,12 @@ struct RawBreakEngineConfig {
     disable_options: Vec<DisableOption>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+struct RawConfigMeta {
+    #[serde(default)]
+    config_version: Option<String>,
+}
+
 impl BreakEngineConfig {
     pub fn load() -> Self {
         Self::from_yaml(include_str!("../gen/android/app/src/main/assets/config/defaults.yaml"))
@@ -119,7 +131,8 @@ impl BreakEngineConfig {
         } else {
             raw.long_break_interval
                 .saturating_div(raw.short_break_interval)
-                .saturating_sub(1) as u8
+                .saturating_sub(1)
+                .min(u8::MAX as u64) as u8
         };
 
         Self {
@@ -128,6 +141,7 @@ impl BreakEngineConfig {
             no_of_short_breaks_per_long_break: breaks_per_long,
             pre_break_warning_time: raw.pre_break_warning_time,
             short_break_duration: raw.short_break_duration,
+            persist_state: raw.persist_state,
             random_order: raw.random_order,
             allow_postpone: raw.allow_postpone,
             postpone_duration_seconds: postpone_seconds(raw.postpone_duration, &raw.postpone_unit),
@@ -149,7 +163,7 @@ impl BreakEngineConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnginePhase {
     Stopped,
@@ -159,7 +173,7 @@ pub enum EnginePhase {
     Disabled,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BreakInfo {
     pub kind: BreakKind,
     pub duration_seconds: u64,
@@ -180,6 +194,27 @@ pub struct EngineStatus {
     pub can_postpone: bool,
     pub skip_limit_reached: bool,
     pub disable_options: Vec<DisableOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BreakEngineSnapshot {
+    pub was_started: bool,
+    pub phase: EnginePhase,
+    pub work_remaining: u64,
+    pub warning_remaining: u64,
+    pub break_remaining: u64,
+    pub disabled_remaining: u64,
+    pub shorts_since_long: u8,
+    pub next_short_index: usize,
+    pub next_long_index: usize,
+    pub short_break_order: Vec<usize>,
+    pub long_break_order: Vec<usize>,
+    pub current_break: Option<BreakInfo>,
+    pub idle_active: bool,
+    pub idle_elapsed_seconds: u64,
+    pub fullscreen: bool,
+    pub consecutive_skips: u8,
+    pub saved_at_unix_seconds: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -267,6 +302,17 @@ impl BreakEngine {
     pub fn status(&mut self) -> EngineStatus {
         self.sync_with_clock();
         self.reconcile();
+        self.build_status()
+    }
+
+    pub fn restore_elapsed(&mut self, elapsed_seconds: u64) -> EngineStatus {
+        self.advance_by_seconds(elapsed_seconds);
+        self.last_synced_at = Some(Instant::now());
+        self.reconcile();
+        self.build_status()
+    }
+
+    fn build_status(&self) -> EngineStatus {
         let skip_allowed = !self.config.strict_break
             && self.consecutive_skips < self.config.consecutive_skip_limit;
         let skip_limit_reached = self.consecutive_skips >= self.config.consecutive_skip_limit;
@@ -307,6 +353,80 @@ impl BreakEngine {
 
     pub fn config(&self) -> &BreakEngineConfig {
         &self.config
+    }
+
+    pub fn snapshot(&mut self, saved_at_unix_seconds: u64) -> BreakEngineSnapshot {
+        self.sync_with_clock();
+        self.reconcile();
+        BreakEngineSnapshot {
+            was_started: !matches!(self.phase, EnginePhase::Stopped),
+            phase: self.phase.clone(),
+            work_remaining: self.work_remaining,
+            warning_remaining: self.warning_remaining,
+            break_remaining: self.break_remaining,
+            disabled_remaining: self.disabled_remaining,
+            shorts_since_long: self.shorts_since_long,
+            next_short_index: self.next_short_index,
+            next_long_index: self.next_long_index,
+            short_break_order: self.short_break_order.clone(),
+            long_break_order: self.long_break_order.clone(),
+            current_break: self.current_break.clone(),
+            idle_active: self.idle_active,
+            idle_elapsed_seconds: self.idle_elapsed_seconds,
+            fullscreen: self.fullscreen,
+            consecutive_skips: self.consecutive_skips,
+            saved_at_unix_seconds,
+        }
+    }
+
+    pub fn from_snapshot(config: BreakEngineConfig, snapshot: BreakEngineSnapshot) -> Self {
+        let mut engine = Self::new(config);
+        let was_started = snapshot.was_started;
+        engine.phase = if was_started {
+            snapshot.phase
+        } else {
+            EnginePhase::Stopped
+        };
+        engine.work_remaining = snapshot.work_remaining;
+        engine.warning_remaining = snapshot.warning_remaining;
+        engine.break_remaining = snapshot.break_remaining;
+        engine.disabled_remaining = snapshot.disabled_remaining;
+        engine.shorts_since_long = snapshot.shorts_since_long;
+        engine.next_short_index = snapshot.next_short_index;
+        engine.next_long_index = snapshot.next_long_index;
+        engine.short_break_order = snapshot.short_break_order;
+        engine.long_break_order = snapshot.long_break_order;
+        engine.current_break = snapshot.current_break;
+        engine.idle_active = snapshot.idle_active;
+        engine.idle_elapsed_seconds = snapshot.idle_elapsed_seconds;
+        engine.fullscreen = snapshot.fullscreen;
+        engine.consecutive_skips = snapshot.consecutive_skips;
+        engine.normalize_snapshot_template_orders();
+        engine.normalize_snapshot_cycle_counter();
+        if was_started {
+            engine.normalize_imported_started_state();
+        } else {
+            engine.phase = EnginePhase::Stopped;
+            engine.work_remaining = engine.config.break_interval.saturating_mul(60);
+            engine.warning_remaining = 0;
+            engine.break_remaining = 0;
+            engine.disabled_remaining = 0;
+            engine.shorts_since_long = 0;
+            engine.next_short_index = 0;
+            engine.next_long_index = 0;
+            engine.current_break = None;
+            engine.idle_active = false;
+            engine.idle_elapsed_seconds = 0;
+            engine.fullscreen = false;
+            engine.consecutive_skips = 0;
+            engine.reset_template_orders();
+        }
+        engine.last_synced_at = if was_started {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        engine
     }
 
     pub fn set_idle(&mut self, idle: bool) {
@@ -666,6 +786,138 @@ impl BreakEngine {
         self.next_short_index = 0;
         self.next_long_index = 0;
     }
+
+    fn normalize_snapshot_template_orders(&mut self) {
+        Self::normalize_template_order(
+            &mut self.short_break_order,
+            &mut self.next_short_index,
+            self.config.short_breaks.len(),
+        );
+        Self::normalize_template_order(
+            &mut self.long_break_order,
+            &mut self.next_long_index,
+            self.config.long_breaks.len(),
+        );
+    }
+
+    fn normalize_template_order(
+        order: &mut Vec<usize>,
+        next_index: &mut usize,
+        expected_len: usize,
+    ) {
+        let valid = order.len() == expected_len
+            && order.iter().all(|&index| index < expected_len)
+            && {
+                let mut seen = vec![false; expected_len];
+                order.iter().all(|&index| {
+                    if seen[index] {
+                        false
+                    } else {
+                        seen[index] = true;
+                        true
+                    }
+                })
+            };
+
+        if !valid {
+            *order = (0..expected_len).collect();
+            *next_index = 0;
+            return;
+        }
+
+        if *next_index >= order.len() {
+            *next_index = 0;
+        }
+    }
+
+    fn normalize_imported_started_state(&mut self) {
+        if matches!(self.phase, EnginePhase::OnBreak) && self.current_break.is_none() {
+            self.phase = EnginePhase::Running;
+            self.reset_imported_running_state();
+        }
+
+        if matches!(self.phase, EnginePhase::OnBreak) && self.break_remaining == 0 {
+            self.phase = EnginePhase::Running;
+            self.reset_imported_running_state();
+        }
+
+        if matches!(self.phase, EnginePhase::Disabled) && self.disabled_remaining == 0 {
+            self.phase = EnginePhase::Running;
+            self.reset_imported_running_state();
+        }
+
+        if matches!(self.phase, EnginePhase::Running) {
+            self.clear_imported_running_state();
+            if self.work_remaining == 0 {
+                self.work_remaining = self.config.break_interval.saturating_mul(60);
+            }
+        }
+
+        if matches!(self.phase, EnginePhase::Warning) && self.warning_remaining == 0 {
+            self.phase = EnginePhase::Running;
+            self.reset_imported_running_state();
+        }
+
+        if matches!(self.phase, EnginePhase::Warning) {
+            self.clear_imported_warning_state();
+        }
+
+        if matches!(self.phase, EnginePhase::Disabled) {
+            self.clear_imported_disabled_state();
+        }
+
+        if matches!(self.phase, EnginePhase::OnBreak) {
+            self.sanitize_imported_break_payload();
+        }
+    }
+
+    fn normalize_snapshot_cycle_counter(&mut self) {
+        self.shorts_since_long = self
+            .shorts_since_long
+            .min(self.config.no_of_short_breaks_per_long_break);
+    }
+
+    fn clear_imported_running_state(&mut self) {
+        self.current_break = None;
+        self.break_remaining = 0;
+        self.warning_remaining = 0;
+        self.disabled_remaining = 0;
+    }
+
+    fn reset_imported_running_state(&mut self) {
+        self.work_remaining = self.config.break_interval.saturating_mul(60);
+        self.current_break = None;
+        self.break_remaining = 0;
+        self.warning_remaining = 0;
+        self.disabled_remaining = 0;
+    }
+
+    fn clear_imported_warning_state(&mut self) {
+        self.current_break = None;
+        self.break_remaining = 0;
+        self.disabled_remaining = 0;
+    }
+
+    fn clear_imported_disabled_state(&mut self) {
+        self.current_break = None;
+        self.break_remaining = 0;
+        self.warning_remaining = 0;
+    }
+
+    fn sanitize_imported_break_payload(&mut self) {
+        if let Some(current_break) = self.current_break.as_mut() {
+            current_break.duration_seconds = self.break_remaining;
+            current_break.mandatory = self.config.strict_break;
+            current_break.kind = if self.shorts_since_long == 0
+                || self.shorts_since_long >= self.config.no_of_short_breaks_per_long_break
+            {
+                BreakKind::Long
+            } else {
+                BreakKind::Short
+            };
+            current_break.template_name = None;
+        }
+    }
 }
 
 fn postpone_seconds(duration: u64, unit: &str) -> u64 {
@@ -677,7 +929,66 @@ fn postpone_seconds(duration: u64, unit: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{BreakEngine, BreakEngineConfig, BreakKind, EnginePhase};
+    use super::{BreakEngine, BreakEngineConfig, BreakInfo, BreakKind, BreakTemplate, EnginePhase};
+
+    fn restore_test_config() -> BreakEngineConfig {
+        let mut config = BreakEngineConfig::load();
+        config.break_interval = 2;
+        config.pre_break_warning_time = 5;
+        config.short_break_duration = 8;
+        config.long_break_duration = 30;
+        config.no_of_short_breaks_per_long_break = 99;
+        config.random_order = false;
+        config.allow_postpone = false;
+        config.strict_break = false;
+        config.short_breaks = vec![BreakTemplate {
+            name: "Restore short".into(),
+        }];
+        config.long_breaks = vec![BreakTemplate {
+            name: "Restore long".into(),
+        }];
+        config
+    }
+
+    fn restore_snapshot(
+        phase: EnginePhase,
+        work_remaining: u64,
+        warning_remaining: u64,
+        break_remaining: u64,
+        disabled_remaining: u64,
+    ) -> super::BreakEngineSnapshot {
+        let is_on_break = matches!(phase, EnginePhase::OnBreak);
+        let current_break = if is_on_break {
+            Some(BreakInfo {
+                kind: BreakKind::Short,
+                duration_seconds: break_remaining,
+                mandatory: false,
+                template_name: Some("Restore short".into()),
+            })
+        } else {
+            None
+        };
+
+        super::BreakEngineSnapshot {
+            was_started: true,
+            phase,
+            work_remaining,
+            warning_remaining,
+            break_remaining,
+            disabled_remaining,
+            shorts_since_long: if is_on_break { 1 } else { 0 },
+            next_short_index: 0,
+            next_long_index: 0,
+            short_break_order: vec![0],
+            long_break_order: vec![0],
+            current_break,
+            idle_active: false,
+            idle_elapsed_seconds: 0,
+            fullscreen: false,
+            consecutive_skips: 0,
+            saved_at_unix_seconds: 0,
+        }
+    }
 
     #[test]
     fn loads_yaml_defaults_shape() {
@@ -699,9 +1010,803 @@ mod tests {
         assert_eq!(config.short_breaks.len(), 7);
         assert_eq!(config.long_breaks.len(), 2);
         assert_eq!(config.disable_options.len(), 4);
+        assert!(config.persist_state);
         assert_eq!(config.disable_options[0].seconds(), 30 * 60);
         assert_eq!(config.short_breaks[0].name, "Gently close your eyes");
         assert_eq!(config.long_breaks[0].name, "Walk for a while");
+    }
+
+    #[test]
+    fn loads_persist_state_from_yaml() {
+        let yaml = r#"
+meta:
+  config_version: "6.0.4"
+random_order: true
+allow_postpone: true
+short_break_interval: 15
+long_break_interval: 75
+long_break_duration: 60
+pre_break_warning_time: 10
+short_break_duration: 15
+persist_state: true
+postpone_duration: 5
+postpone_unit: minutes
+postpone_options:
+  - duration: 5
+    unit: minutes
+  - duration: 10
+    unit: minutes
+  - duration: 15
+    unit: minutes
+strict_break: false
+consecutive_skip_limit: 2
+idle_time: 5
+disable_options:
+  - label: for_x_minutes
+    time: 30
+    unit: minute
+  - label: for_x_hour
+    time: 1
+    unit: hour
+  - label: for_x_hours
+    time: 2
+    unit: hour
+  - label: for_x_hours
+    time: 3
+    unit: hour
+short_breaks:
+  - name: Gently close your eyes
+long_breaks:
+  - name: Walk for a while
+"#;
+
+        let config = BreakEngineConfig::from_yaml(yaml).unwrap();
+
+        assert!(config.persist_state);
+    }
+
+    #[test]
+    fn rejects_removed_shortcut_config_fields() {
+        let yaml = r#"
+short_break_interval: 15
+long_break_interval: 75
+long_break_duration: 60
+pre_break_warning_time: 10
+short_break_duration: 15
+strict_break: false
+shortcut_disable_time: 2
+"#;
+
+        let error = BreakEngineConfig::from_yaml(yaml).unwrap_err();
+
+        assert!(error.to_string().contains("shortcut_disable_time"));
+    }
+
+    #[test]
+    fn large_interval_ratio_clamps_short_break_count() {
+        let yaml = r#"
+short_break_interval: 1
+long_break_interval: 300
+long_break_duration: 60
+pre_break_warning_time: 10
+short_break_duration: 15
+strict_break: false
+consecutive_skip_limit: 2
+"#;
+
+        let config = BreakEngineConfig::from_yaml(yaml).unwrap();
+
+        assert_eq!(config.no_of_short_breaks_per_long_break, u8::MAX);
+    }
+
+    #[test]
+    fn snapshot_round_trip_preserves_runtime_state() {
+        let mut config = BreakEngineConfig::load();
+        config.random_order = false;
+        config.short_breaks = vec![
+            super::BreakTemplate { name: "A".into() },
+            super::BreakTemplate { name: "B".into() },
+            super::BreakTemplate { name: "C".into() },
+        ];
+        config.long_breaks = vec![super::BreakTemplate { name: "L".into() }];
+        config.no_of_short_breaks_per_long_break = 99;
+
+        let mut engine = BreakEngine::new(config.clone());
+        engine.start();
+        let first_break = engine.begin_break_now();
+        assert_eq!(first_break.template_name.as_deref(), Some("A"));
+
+        engine.skip_break().unwrap();
+        let second_break = engine.begin_break_now();
+        assert_eq!(second_break.template_name.as_deref(), Some("B"));
+        engine.set_idle(true);
+        engine.set_fullscreen(true);
+
+        let snapshot = engine.snapshot(0);
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+        let current_break = restored.current_break().expect("expected active break");
+
+        assert_eq!(current_break.kind, BreakKind::Short);
+        assert_eq!(current_break.duration_seconds, second_break.duration_seconds);
+        assert_eq!(current_break.template_name, None);
+        assert_eq!(
+            restored.status().seconds_remaining,
+            Some(second_break.duration_seconds)
+        );
+        assert_eq!(restored.status().phase, EnginePhase::OnBreak);
+
+        restored.skip_break().unwrap();
+        let next_break = restored.begin_break_now();
+        assert_eq!(next_break.template_name.as_deref(), Some("C"));
+        let error = restored.skip_break().unwrap_err();
+
+        assert!(error.contains("Skip limit"));
+    }
+
+    #[test]
+    fn restored_running_engine_keeps_advancing_after_import() {
+        let mut config = BreakEngineConfig::load();
+        config.random_order = false;
+        config.short_breaks = vec![super::BreakTemplate {
+            name: "A".into(),
+        }];
+        config.no_of_short_breaks_per_long_break = 99;
+
+        let mut engine = BreakEngine::new(config.clone());
+        engine.start();
+        engine.begin_break_now();
+
+        let snapshot = engine.snapshot(123);
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+        restored.rewind_last_sync_by(3);
+
+        let status = restored.status();
+
+        assert_eq!(status.phase, EnginePhase::OnBreak);
+        assert_eq!(status.seconds_remaining, Some(12));
+    }
+
+    #[test]
+    fn restore_running_snapshot_applies_elapsed_wall_clock_time() {
+        let config = restore_test_config();
+        let snapshot = restore_snapshot(EnginePhase::Running, 20, 0, 0, 0);
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+
+        let status = restored.restore_elapsed(7);
+
+        assert!(matches!(status.phase, EnginePhase::Running));
+        assert_eq!(status.seconds_remaining, Some(13));
+    }
+
+    #[test]
+    fn restore_warning_snapshot_enters_break_when_elapsed_crosses_zero() {
+        let config = restore_test_config();
+        let snapshot = restore_snapshot(EnginePhase::Warning, 20, 3, 0, 0);
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+
+        let status = restored.restore_elapsed(3);
+
+        assert!(matches!(status.phase, EnginePhase::OnBreak));
+        assert_eq!(status.seconds_remaining, Some(8));
+        assert_eq!(status.current_break.as_ref().map(|info| &info.kind), Some(&BreakKind::Short));
+    }
+
+    #[test]
+    fn restore_disabled_snapshot_expires_when_elapsed_is_long_enough() {
+        let config = restore_test_config();
+        let snapshot = restore_snapshot(EnginePhase::Disabled, 20, 0, 0, 4);
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+
+        let status = restored.restore_elapsed(4);
+
+        assert!(matches!(status.phase, EnginePhase::Running));
+        assert_eq!(status.seconds_remaining, Some(20));
+    }
+
+    #[test]
+    fn restore_active_break_snapshot_completes_break_when_elapsed_is_long_enough() {
+        let config = restore_test_config();
+        let snapshot = restore_snapshot(EnginePhase::OnBreak, 20, 0, 3, 0);
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+
+        let status = restored.restore_elapsed(3);
+
+        assert!(matches!(status.phase, EnginePhase::Running));
+        assert_eq!(status.seconds_remaining, Some(120));
+        assert!(status.current_break.is_none());
+    }
+
+    #[test]
+    fn restored_running_snapshot_keeps_skip_limit_continuity() {
+        let config = restore_test_config();
+        let mut snapshot = restore_snapshot(EnginePhase::Running, 20, 0, 0, 0);
+        snapshot.consecutive_skips = config.consecutive_skip_limit;
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+
+        let status = restored.status();
+        assert!(matches!(status.phase, EnginePhase::Running));
+        assert!(status.skip_limit_reached);
+
+        restored.begin_break_now();
+        let error = restored.skip_break().unwrap_err();
+
+        assert!(error.contains("Skip limit"));
+    }
+
+    #[test]
+    fn invalid_snapshot_template_orders_are_normalized_safely() {
+        let mut config = BreakEngineConfig::load();
+        config.random_order = false;
+        config.short_breaks = vec![
+            super::BreakTemplate { name: "A".into() },
+            super::BreakTemplate { name: "B".into() },
+        ];
+        config.long_breaks = vec![super::BreakTemplate { name: "L".into() }];
+
+        let snapshot = super::BreakEngineSnapshot {
+            was_started: true,
+            phase: EnginePhase::Running,
+            work_remaining: config.break_interval * 60,
+            warning_remaining: 0,
+            break_remaining: 0,
+            disabled_remaining: 0,
+            shorts_since_long: 0,
+            next_short_index: 5,
+            next_long_index: 0,
+            short_break_order: vec![0, 2, 1],
+            long_break_order: vec![0],
+            current_break: None,
+            idle_active: false,
+            idle_elapsed_seconds: 0,
+            fullscreen: false,
+            consecutive_skips: 4,
+            saved_at_unix_seconds: 0,
+        };
+
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+        let break_info = restored.begin_break_now();
+
+        assert_eq!(break_info.template_name.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn malformed_started_snapshot_with_zero_second_break_is_normalized() {
+        let mut config = BreakEngineConfig::load();
+        config.random_order = false;
+        config.short_breaks = vec![super::BreakTemplate {
+            name: "A".into(),
+        }];
+        let expected_work_remaining = config.break_interval * 60;
+
+        let snapshot = super::BreakEngineSnapshot {
+            was_started: true,
+            phase: EnginePhase::OnBreak,
+            work_remaining: 100,
+            warning_remaining: 0,
+            break_remaining: 0,
+            disabled_remaining: 0,
+            shorts_since_long: 0,
+            next_short_index: 0,
+            next_long_index: 0,
+            short_break_order: vec![0],
+            long_break_order: vec![],
+            current_break: Some(super::BreakInfo {
+                kind: BreakKind::Short,
+                duration_seconds: 15,
+                mandatory: false,
+                template_name: Some("A".into()),
+            }),
+            idle_active: false,
+            idle_elapsed_seconds: 0,
+            fullscreen: false,
+            consecutive_skips: 4,
+            saved_at_unix_seconds: 0,
+        };
+
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+
+        assert!(matches!(restored.status().phase, EnginePhase::Running));
+        assert_eq!(restored.status().seconds_remaining, Some(expected_work_remaining));
+        assert!(restored.current_break().is_none());
+        assert_eq!(restored.break_remaining, 0);
+    }
+
+    #[test]
+    fn malformed_warning_snapshot_clears_stale_break_and_disabled_state() {
+        let config = BreakEngineConfig::load();
+        let expected_work_remaining = config.break_interval * 60;
+
+        let snapshot = super::BreakEngineSnapshot {
+            was_started: true,
+            phase: EnginePhase::Warning,
+            work_remaining: 100,
+            warning_remaining: 0,
+            break_remaining: 7,
+            disabled_remaining: 11,
+            shorts_since_long: 0,
+            next_short_index: 0,
+            next_long_index: 0,
+            short_break_order: vec![0],
+            long_break_order: vec![0],
+            current_break: Some(super::BreakInfo {
+                kind: BreakKind::Short,
+                duration_seconds: 15,
+                mandatory: false,
+                template_name: Some("A".into()),
+            }),
+            idle_active: false,
+            idle_elapsed_seconds: 0,
+            fullscreen: false,
+            consecutive_skips: 4,
+            saved_at_unix_seconds: 0,
+        };
+
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+
+        assert!(matches!(restored.status().phase, EnginePhase::Running));
+        assert_eq!(restored.status().seconds_remaining, Some(expected_work_remaining));
+        assert!(restored.current_break().is_none());
+        assert_eq!(restored.break_remaining, 0);
+        assert_eq!(restored.disabled_remaining, 0);
+    }
+
+    #[test]
+    fn malformed_started_warning_snapshot_clears_stale_break_payload() {
+        let config = BreakEngineConfig::load();
+
+        let snapshot = super::BreakEngineSnapshot {
+            was_started: true,
+            phase: EnginePhase::Warning,
+            work_remaining: 100,
+            warning_remaining: 5,
+            break_remaining: 7,
+            disabled_remaining: 11,
+            shorts_since_long: 0,
+            next_short_index: 0,
+            next_long_index: 0,
+            short_break_order: vec![0],
+            long_break_order: vec![0],
+            current_break: Some(super::BreakInfo {
+                kind: BreakKind::Short,
+                duration_seconds: 15,
+                mandatory: false,
+                template_name: Some("A".into()),
+            }),
+            idle_active: false,
+            idle_elapsed_seconds: 0,
+            fullscreen: false,
+            consecutive_skips: 4,
+            saved_at_unix_seconds: 0,
+        };
+
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+
+        assert!(matches!(restored.status().phase, EnginePhase::Warning));
+        assert_eq!(restored.status().seconds_remaining, Some(5));
+        assert!(restored.current_break().is_none());
+        assert_eq!(restored.break_remaining, 0);
+        assert_eq!(restored.disabled_remaining, 0);
+        assert_eq!(restored.consecutive_skips, 4);
+    }
+
+    #[test]
+    fn malformed_started_disabled_snapshot_clears_stale_break_payload() {
+        let config = BreakEngineConfig::load();
+
+        let snapshot = super::BreakEngineSnapshot {
+            was_started: true,
+            phase: EnginePhase::Disabled,
+            work_remaining: 100,
+            warning_remaining: 0,
+            break_remaining: 7,
+            disabled_remaining: 9,
+            shorts_since_long: 0,
+            next_short_index: 0,
+            next_long_index: 0,
+            short_break_order: vec![0],
+            long_break_order: vec![0],
+            current_break: Some(super::BreakInfo {
+                kind: BreakKind::Short,
+                duration_seconds: 15,
+                mandatory: false,
+                template_name: Some("A".into()),
+            }),
+            idle_active: false,
+            idle_elapsed_seconds: 0,
+            fullscreen: false,
+            consecutive_skips: 2,
+            saved_at_unix_seconds: 0,
+        };
+
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+
+        assert!(matches!(restored.status().phase, EnginePhase::Disabled));
+        assert_eq!(restored.status().seconds_remaining, Some(9));
+        assert!(restored.current_break().is_none());
+        assert_eq!(restored.break_remaining, 0);
+        assert_eq!(restored.consecutive_skips, 2);
+    }
+
+    #[test]
+    fn malformed_started_on_break_snapshot_sanitizes_active_break_payload() {
+        let config = BreakEngineConfig::load();
+
+        let snapshot = super::BreakEngineSnapshot {
+            was_started: true,
+            phase: EnginePhase::OnBreak,
+            work_remaining: 100,
+            warning_remaining: 0,
+            break_remaining: 7,
+            disabled_remaining: 0,
+            shorts_since_long: 0,
+            next_short_index: 0,
+            next_long_index: 0,
+            short_break_order: vec![0],
+            long_break_order: vec![0],
+            current_break: Some(super::BreakInfo {
+                kind: BreakKind::Long,
+                duration_seconds: 999,
+                mandatory: true,
+                template_name: Some("Malformed".into()),
+            }),
+            idle_active: false,
+            idle_elapsed_seconds: 0,
+            fullscreen: false,
+            consecutive_skips: 0,
+            saved_at_unix_seconds: 0,
+        };
+
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+        let current_break = restored.current_break().expect("expected active break");
+
+        assert!(matches!(restored.status().phase, EnginePhase::OnBreak));
+        assert_eq!(current_break.duration_seconds, 7);
+        assert!(!current_break.mandatory);
+    }
+
+    #[test]
+    fn malformed_started_running_snapshot_clears_break_only_state() {
+        let config = BreakEngineConfig::load();
+
+        let snapshot = super::BreakEngineSnapshot {
+            was_started: true,
+            phase: EnginePhase::Running,
+            work_remaining: 100,
+            warning_remaining: 4,
+            break_remaining: 7,
+            disabled_remaining: 9,
+            shorts_since_long: 0,
+            next_short_index: 0,
+            next_long_index: 0,
+            short_break_order: vec![0],
+            long_break_order: vec![0],
+            current_break: Some(super::BreakInfo {
+                kind: BreakKind::Long,
+                duration_seconds: 999,
+                mandatory: true,
+                template_name: Some("Malformed".into()),
+            }),
+            idle_active: false,
+            idle_elapsed_seconds: 0,
+            fullscreen: false,
+            consecutive_skips: 5,
+            saved_at_unix_seconds: 0,
+        };
+
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+
+        assert!(matches!(restored.status().phase, EnginePhase::Running));
+        assert_eq!(restored.status().seconds_remaining, Some(100));
+        assert!(restored.current_break().is_none());
+        assert_eq!(restored.break_remaining, 0);
+        assert_eq!(restored.warning_remaining, 0);
+        assert_eq!(restored.disabled_remaining, 0);
+        assert_eq!(restored.consecutive_skips, 5);
+    }
+
+    #[test]
+    fn malformed_started_running_snapshot_with_zero_work_remaining_is_reset() {
+        let config = BreakEngineConfig::load();
+        let expected_work_remaining = config.break_interval * 60;
+
+        let snapshot = super::BreakEngineSnapshot {
+            was_started: true,
+            phase: EnginePhase::Running,
+            work_remaining: 0,
+            warning_remaining: 0,
+            break_remaining: 0,
+            disabled_remaining: 0,
+            shorts_since_long: 0,
+            next_short_index: 0,
+            next_long_index: 0,
+            short_break_order: vec![0],
+            long_break_order: vec![0],
+            current_break: None,
+            idle_active: false,
+            idle_elapsed_seconds: 0,
+            fullscreen: false,
+            consecutive_skips: 0,
+            saved_at_unix_seconds: 0,
+        };
+
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+
+        assert!(matches!(restored.status().phase, EnginePhase::Running));
+        assert_eq!(restored.status().seconds_remaining, Some(expected_work_remaining));
+        assert!(restored.current_break().is_none());
+    }
+
+    #[test]
+    fn malformed_started_on_break_snapshot_normalizes_break_payload_fields() {
+        let config = BreakEngineConfig::load();
+
+        let snapshot = super::BreakEngineSnapshot {
+            was_started: true,
+            phase: EnginePhase::OnBreak,
+            work_remaining: 100,
+            warning_remaining: 0,
+            break_remaining: config.long_break_duration,
+            disabled_remaining: 0,
+            shorts_since_long: 0,
+            next_short_index: 0,
+            next_long_index: 0,
+            short_break_order: vec![0],
+            long_break_order: vec![0],
+            current_break: Some(super::BreakInfo {
+                kind: BreakKind::Short,
+                duration_seconds: 999,
+                mandatory: false,
+                template_name: Some("Malformed".into()),
+            }),
+            idle_active: false,
+            idle_elapsed_seconds: 0,
+            fullscreen: false,
+            consecutive_skips: 0,
+            saved_at_unix_seconds: 0,
+        };
+
+        let mut restored = BreakEngine::from_snapshot(config.clone(), snapshot);
+        let current_break = restored.current_break().expect("expected active break");
+
+        assert!(matches!(restored.status().phase, EnginePhase::OnBreak));
+        assert_eq!(current_break.duration_seconds, config.long_break_duration);
+        assert_eq!(current_break.mandatory, config.strict_break);
+        assert_eq!(current_break.template_name, None);
+    }
+
+    #[test]
+    fn equal_duration_active_break_is_classified_by_cycle_state() {
+        let mut config = BreakEngineConfig::load();
+        config.short_break_duration = 30;
+        config.long_break_duration = 30;
+        config.short_breaks = vec![super::BreakTemplate {
+            name: "A".into(),
+        }];
+        config.long_breaks = vec![super::BreakTemplate {
+            name: "L".into(),
+        }];
+
+        let snapshot = super::BreakEngineSnapshot {
+            was_started: true,
+            phase: EnginePhase::OnBreak,
+            work_remaining: 100,
+            warning_remaining: 0,
+            break_remaining: 30,
+            disabled_remaining: 0,
+            shorts_since_long: 0,
+            next_short_index: 0,
+            next_long_index: 0,
+            short_break_order: vec![0],
+            long_break_order: vec![0],
+            current_break: Some(super::BreakInfo {
+                kind: BreakKind::Short,
+                duration_seconds: 30,
+                mandatory: false,
+                template_name: Some("Malformed".into()),
+            }),
+            idle_active: false,
+            idle_elapsed_seconds: 0,
+            fullscreen: false,
+            consecutive_skips: 0,
+            saved_at_unix_seconds: 0,
+        };
+
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+        let current_break = restored.current_break().expect("expected active break");
+
+        assert!(matches!(restored.status().phase, EnginePhase::OnBreak));
+        assert_eq!(current_break.kind, BreakKind::Long);
+        assert_eq!(current_break.duration_seconds, 30);
+        assert_eq!(current_break.template_name, None);
+    }
+
+    #[test]
+    fn stopped_snapshot_reinitializes_template_orders_for_new_session() {
+        let mut config = BreakEngineConfig::load();
+        config.random_order = false;
+
+        let snapshot = super::BreakEngineSnapshot {
+            was_started: false,
+            phase: EnginePhase::OnBreak,
+            work_remaining: 1,
+            warning_remaining: 2,
+            break_remaining: 3,
+            disabled_remaining: 4,
+            shorts_since_long: 5,
+            next_short_index: 1,
+            next_long_index: 1,
+            short_break_order: vec![2, 1, 0],
+            long_break_order: vec![1, 0],
+            current_break: Some(super::BreakInfo {
+                kind: BreakKind::Short,
+                duration_seconds: 15,
+                mandatory: false,
+                template_name: Some("A".into()),
+            }),
+            idle_active: true,
+            idle_elapsed_seconds: 10,
+            fullscreen: true,
+            consecutive_skips: 2,
+            saved_at_unix_seconds: 0,
+        };
+
+        let mut restored = BreakEngine::from_snapshot(config.clone(), snapshot);
+
+        assert!(matches!(restored.status().phase, EnginePhase::Stopped));
+        assert_eq!(
+            restored.current_break().is_none(),
+            true
+        );
+        assert_eq!(restored.shorts_since_long, 0);
+        assert_eq!(restored.next_short_index, 0);
+        assert_eq!(restored.next_long_index, 0);
+        assert_eq!(restored.short_break_order, (0..config.short_breaks.len()).collect::<Vec<_>>());
+        assert_eq!(restored.long_break_order, (0..config.long_breaks.len()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn malformed_shorts_since_long_is_clamped_on_import() {
+        let mut config = BreakEngineConfig::load();
+        config.random_order = false;
+        config.short_breaks = vec![super::BreakTemplate {
+            name: "A".into(),
+        }];
+        config.long_breaks = vec![super::BreakTemplate {
+            name: "L".into(),
+        }];
+        config.no_of_short_breaks_per_long_break = 2;
+
+        let snapshot = super::BreakEngineSnapshot {
+            was_started: true,
+            phase: EnginePhase::Running,
+            work_remaining: config.break_interval * 60,
+            warning_remaining: 0,
+            break_remaining: 0,
+            disabled_remaining: 0,
+            shorts_since_long: 9,
+            next_short_index: 0,
+            next_long_index: 0,
+            short_break_order: vec![0],
+            long_break_order: vec![0],
+            current_break: None,
+            idle_active: false,
+            idle_elapsed_seconds: 0,
+            fullscreen: false,
+            consecutive_skips: 0,
+            saved_at_unix_seconds: 0,
+        };
+
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+
+        assert_eq!(restored.shorts_since_long, 2);
+        assert_eq!(restored.status().upcoming_break_kind, Some(BreakKind::Long));
+    }
+
+    #[test]
+    fn malformed_started_snapshot_is_normalized_on_import() {
+        let config = BreakEngineConfig::load();
+        let expected_work_remaining = config.break_interval * 60;
+
+        let on_break_snapshot = super::BreakEngineSnapshot {
+            was_started: true,
+            phase: EnginePhase::OnBreak,
+            work_remaining: 100,
+            warning_remaining: 6,
+            break_remaining: 7,
+            disabled_remaining: 0,
+            shorts_since_long: 2,
+            next_short_index: 0,
+            next_long_index: 0,
+            short_break_order: vec![0],
+            long_break_order: vec![0],
+            current_break: None,
+            idle_active: true,
+            idle_elapsed_seconds: 42,
+            fullscreen: true,
+            consecutive_skips: 3,
+            saved_at_unix_seconds: 0,
+        };
+
+        let mut restored = BreakEngine::from_snapshot(config.clone(), on_break_snapshot);
+
+        assert!(matches!(restored.status().phase, EnginePhase::Running));
+        assert_eq!(restored.status().seconds_remaining, Some(expected_work_remaining));
+        assert!(restored.current_break().is_none());
+        assert_eq!(restored.break_remaining, 0);
+        assert_eq!(restored.disabled_remaining, 0);
+        assert_eq!(restored.warning_remaining, 0);
+        assert_eq!(restored.consecutive_skips, 3);
+
+        let disabled_snapshot = super::BreakEngineSnapshot {
+            was_started: true,
+            phase: EnginePhase::Disabled,
+            work_remaining: 100,
+            warning_remaining: 0,
+            break_remaining: 0,
+            disabled_remaining: 0,
+            shorts_since_long: 1,
+            next_short_index: 0,
+            next_long_index: 0,
+            short_break_order: vec![0],
+            long_break_order: vec![0],
+            current_break: None,
+            idle_active: false,
+            idle_elapsed_seconds: 0,
+            fullscreen: false,
+            consecutive_skips: 0,
+            saved_at_unix_seconds: 0,
+        };
+
+        let mut restored = BreakEngine::from_snapshot(config, disabled_snapshot);
+
+        assert!(matches!(restored.status().phase, EnginePhase::Running));
+        assert_eq!(restored.status().seconds_remaining, Some(expected_work_remaining));
+        assert!(restored.current_break().is_none());
+        assert_eq!(restored.disabled_remaining, 0);
+    }
+
+    #[test]
+    fn stopped_snapshot_import_resets_active_runtime_state() {
+        let config = BreakEngineConfig::load();
+
+        let snapshot = super::BreakEngineSnapshot {
+            was_started: false,
+            phase: EnginePhase::OnBreak,
+            work_remaining: 1,
+            warning_remaining: 2,
+            break_remaining: 3,
+            disabled_remaining: 4,
+            shorts_since_long: 5,
+            next_short_index: 1,
+            next_long_index: 1,
+            short_break_order: vec![0],
+            long_break_order: vec![0],
+            current_break: Some(super::BreakInfo {
+                kind: BreakKind::Short,
+                duration_seconds: 15,
+                mandatory: false,
+                template_name: Some("A".into()),
+            }),
+            idle_active: true,
+            idle_elapsed_seconds: 10,
+            fullscreen: true,
+            consecutive_skips: 2,
+            saved_at_unix_seconds: 0,
+        };
+
+        let mut restored = BreakEngine::from_snapshot(config, snapshot);
+
+        assert!(matches!(restored.status().phase, EnginePhase::Stopped));
+        assert_eq!(restored.status().seconds_remaining, None);
+        assert!(restored.current_break().is_none());
+        assert_eq!(restored.work_remaining, restored.config.break_interval * 60);
+        assert_eq!(restored.warning_remaining, 0);
+        assert_eq!(restored.break_remaining, 0);
+        assert_eq!(restored.disabled_remaining, 0);
+        assert!(!restored.idle_active);
+        assert_eq!(restored.idle_elapsed_seconds, 0);
+        assert!(!restored.fullscreen);
+        assert_eq!(restored.consecutive_skips, 0);
     }
 
     #[test]
