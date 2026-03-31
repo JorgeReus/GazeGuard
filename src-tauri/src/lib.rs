@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod break_engine;
+mod desktop_signals;
 
 use serde::Serialize;
 use serde_json::json;
@@ -474,6 +475,16 @@ fn set_fullscreen_active(
 }
 
 #[tauri::command]
+fn apply_desktop_signals_to_engine(
+    engine: &mut BreakEngine,
+    signals: crate::desktop_signals::DesktopSignals,
+) -> EngineStatus {
+    engine.set_idle(signals.idle_active);
+    engine.set_fullscreen(signals.fullscreen_active);
+    engine.status()
+}
+
+#[tauri::command]
 fn sync_desktop_window_state(
     app: tauri::AppHandle,
     state: State<'_, SharedBreakEngine>,
@@ -484,23 +495,16 @@ fn sync_desktop_window_state(
     let _ = &app;
 
     #[cfg(desktop)]
-    let (fullscreen_active, idle_active) = app
-        .get_webview_window("main")
-        .map(|window| {
-            let fullscreen = window.is_fullscreen().unwrap_or(false);
-            let focused = window.is_focused().unwrap_or(true);
-            let minimized = window.is_minimized().unwrap_or(false);
-            let visible = window.is_visible().unwrap_or(true);
-            (fullscreen, !focused || minimized || !visible)
-        })
-        .unwrap_or((false, false));
+    let signals =
+        crate::desktop_signals::collect_desktop_signals(&app, guard.config().idle_time.saturating_mul(60));
 
     #[cfg(not(desktop))]
-    let (fullscreen_active, idle_active) = (false, false);
+    let signals = crate::desktop_signals::DesktopSignals {
+        fullscreen_active: false,
+        idle_active: false,
+    };
 
-    guard.set_idle(idle_active);
-    guard.set_fullscreen(fullscreen_active);
-    let status = guard.status();
+    let status = apply_desktop_signals_to_engine(&mut guard, signals);
     drop(guard);
     let _ = save_registered_engine_snapshot(unix_now_seconds());
     Ok(status)
@@ -851,7 +855,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        break_overlay_snapshot_for_android, create_break_engine,
+        apply_desktop_signals_to_engine, break_overlay_snapshot_for_android, create_break_engine,
         create_break_engine_for_tests, debug_engine_phase_for_android, force_break_now_for_android,
         save_engine_snapshot, save_registered_engine_snapshot, singleton_test_lock,
         SharedBreakEngine, SNAPSHOT_FILE_NAME, format_tray_title, set_shared_break_engine_for_tests,
@@ -926,6 +930,46 @@ mod tests {
                 _shared_engine: SharedEngineTestGuard,
             },
         )
+    }
+
+    #[test]
+    fn apply_desktop_signals_updates_engine_idle_and_fullscreen_state() {
+        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        engine.start();
+
+        let status = apply_desktop_signals_to_engine(
+            &mut engine,
+            crate::desktop_signals::DesktopSignals {
+                idle_active: true,
+                fullscreen_active: true,
+            },
+        );
+
+        assert!(matches!(status.phase, EnginePhase::Running));
+        let snapshot = engine.snapshot(0);
+        assert!(snapshot.idle_active);
+        assert!(snapshot.fullscreen);
+    }
+
+    #[test]
+    fn apply_desktop_signals_clears_idle_and_fullscreen_state() {
+        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        engine.start();
+        engine.set_idle(true);
+        engine.set_fullscreen(true);
+
+        let status = apply_desktop_signals_to_engine(
+            &mut engine,
+            crate::desktop_signals::DesktopSignals {
+                idle_active: false,
+                fullscreen_active: false,
+            },
+        );
+
+        assert!(matches!(status.phase, EnginePhase::Running));
+        let snapshot = engine.snapshot(0);
+        assert!(!snapshot.idle_active);
+        assert!(!snapshot.fullscreen);
     }
 
     #[test]
