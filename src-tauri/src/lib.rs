@@ -1138,6 +1138,8 @@ mod tests {
 
     #[test]
     fn save_registered_engine_snapshot_uses_registered_state() {
+        let _lock = singleton_test_lock().lock().unwrap();
+        let _shared_engine = SharedEngineTestGuard;
         let app_data_dir = unique_test_dir("registered-shutdown-save");
         let saved_at = 5_000;
         let snapshot_file = app_data_dir.join(SNAPSHOT_FILE_NAME);
@@ -1156,6 +1158,8 @@ mod tests {
 
     #[test]
     fn save_registered_engine_snapshot_updates_runtime_without_shutdown() {
+        let _lock = singleton_test_lock().lock().unwrap();
+        let _shared_engine = SharedEngineTestGuard;
         let app_data_dir = unique_test_dir("registered-runtime-save");
         let saved_at = 6_000;
         let mut source_engine = BreakEngine::new(test_config(true));
