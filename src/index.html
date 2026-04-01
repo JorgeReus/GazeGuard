@@ -43,6 +43,83 @@
       border-radius: 8px;
       min-height: 50px;
     }
+    #androidAlertSetup {
+      margin-top: 16px;
+      padding: 14px;
+      border-radius: 10px;
+      background: #fff4d6;
+      border: 1px solid #f0d48a;
+      display: none;
+    }
+    #androidAlertSetup p {
+      margin: 0 0 10px 0;
+      color: #6b4f00;
+      line-height: 1.4;
+    }
+    #androidAlertSetup button {
+      margin: 8px 0 0 0;
+      padding: 12px;
+      font-size: 14px;
+      background: #1d3557;
+      color: white;
+    }
+    #countdownCard {
+      margin-top: 20px;
+      padding: 18px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #f0f7ff, #fff7e8);
+      text-align: center;
+    }
+    #countdownLabel {
+      display: block;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #666;
+      margin-bottom: 8px;
+    }
+    #countdownValue {
+      font-size: 44px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: #1d3557;
+    }
+    #android-break-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.95);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9998;
+    }
+    #android-break-modal {
+      text-align: center;
+      color: #fff;
+      padding: 40px;
+    }
+    #android-break-message {
+      font-size: 36px;
+      margin-bottom: 24px;
+    }
+    #android-break-timer {
+      font-size: 96px;
+      font-weight: 200;
+      margin-bottom: 32px;
+    }
+    #android-break-skip {
+      padding: 14px 32px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      background: rgba(255, 255, 255, 0.08);
+      color: white;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    #android-break-skip:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
@@ -53,17 +130,53 @@
   <button class="stop" id="stopService">Stop Break Timer</button>
   <button class="test" id="testBreak">Test Break Screen</button>
 
+  <div id="countdownCard">
+    <strong id="countdownLabel">Next break in</strong>
+    <div id="countdownValue">0:00</div>
+  </div>
+
   <div id="status">
     <strong>Status:</strong> <span id="statusText">Not started</span>
+  </div>
+  <div id="androidAlertSetup">
+    <p id="androidAlertSetupText">Android needs permission to show aggressive break alerts while the app is in the background.</p>
+    <button id="openFullScreenAlertSettings">Allow Full-Screen Break Alerts</button>
+    <button id="openNotificationSettings">Open Notification Settings</button>
+    <button id="openOverlaySettings">Allow Break Overlay</button>
+  </div>
+  <div id="disableOptions"></div>
+
+  <div id="android-break-overlay" aria-live="polite" role="alert">
+    <div id="android-break-modal">
+      <div id="android-break-message">Take a Break</div>
+      <div id="android-break-timer">0:00</div>
+      <button id="android-break-skip">Skip Break</button>
+    </div>
   </div>
 
   <script>
     const statusEl = document.getElementById('statusText');
     const tauriStatusEl = document.getElementById('tauri-status');
+    const disableOptionsEl = document.getElementById('disableOptions');
+    const countdownLabelEl = document.getElementById('countdownLabel');
+    const countdownValueEl = document.getElementById('countdownValue');
+    const androidAlertSetupEl = document.getElementById('androidAlertSetup');
+    const androidAlertSetupTextEl = document.getElementById('androidAlertSetupText');
+    let statusPollId = null;
+    let breakWindowVisible = false;
+    let androidOverlayVisible = false;
+    const androidBreakOverlayEl = document.getElementById('android-break-overlay');
+    const androidBreakMessageEl = document.getElementById('android-break-message');
+    const androidBreakTimerEl = document.getElementById('android-break-timer');
+    const androidBreakSkipBtn = document.getElementById('android-break-skip');
 
-    if (window.AndroidBridge?.exitImmersiveMode) {
-      window.AndroidBridge.exitImmersiveMode();
+    function ensureAndroidMainScreenChrome() {
+      if (window.AndroidBridge?.exitImmersiveMode) {
+        window.AndroidBridge.exitImmersiveMode();
+      }
     }
+
+    ensureAndroidMainScreenChrome();
 
     // Check Tauri availability
     if (window.__TAURI__) {
@@ -76,14 +189,264 @@
 
     const { invoke } = window.__TAURI__.core;
 
+    function isAndroidBridgeAvailable() {
+      return Boolean(window.AndroidBridge?.startBreakService && window.AndroidBridge?.stopBreakService);
+    }
+
+    function setAndroidAlertSetupVisible(visible, message = null) {
+      if (!androidAlertSetupEl) return;
+      androidAlertSetupEl.style.display = visible ? 'block' : 'none';
+      if (message && androidAlertSetupTextEl) {
+        androidAlertSetupTextEl.textContent = message;
+      }
+    }
+
+    async function syncAndroidAlertCapability() {
+      if (!isAndroidBridgeAvailable()) {
+        setAndroidAlertSetupVisible(false);
+        return;
+      }
+
+      try {
+        const bridge = await waitForAndroidBridge();
+        const allowed = bridge.canUseFullScreenBreakAlerts?.();
+        const overlayAllowed = bridge.canDrawBreakOverlay?.();
+        if (allowed && overlayAllowed) {
+          setAndroidAlertSetupVisible(false);
+        } else {
+          setAndroidAlertSetupVisible(
+            true,
+            'Android is blocking automatic background break presentation. Enable full-screen alerts, notifications, and break overlay permission for the app.'
+          );
+        }
+      } catch (error) {
+        console.error('Failed to check Android alert capability:', error);
+        setAndroidAlertSetupVisible(
+          true,
+          'Could not verify Android alert permissions. Open settings and allow notifications/full-screen alerts for the app.'
+        );
+      }
+    }
+
+    function stopStatusPolling() {
+      if (statusPollId !== null) {
+        clearInterval(statusPollId);
+        statusPollId = null;
+      }
+    }
+
+    function startStatusPolling() {
+      stopStatusPolling();
+      statusPollId = setInterval(() => {
+        Promise.all([syncActivitySignals(), syncEngineStatus()]).catch((error) => {
+          console.error('Failed to sync engine status:', error);
+        });
+      }, 1000);
+    }
+
+    function formatSeconds(totalSeconds) {
+      const mins = Math.floor(totalSeconds / 60);
+      const secs = totalSeconds % 60;
+      return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    function labelFromTemplate(name) {
+      return name
+        .split('_')
+        .slice(2)
+        .join(' ')
+        .replace(/\b\w/g, (letter) => letter.toUpperCase());
+    }
+
+    function setAndroidSkipState(canSkip, locked, mandatory) {
+      if (!androidBreakSkipBtn) return;
+      androidBreakSkipBtn.disabled = locked || !canSkip;
+      if (locked) {
+        androidBreakSkipBtn.textContent = 'Skip Locked';
+      } else if (mandatory || !canSkip) {
+        androidBreakSkipBtn.textContent = 'Mandatory Break';
+      } else {
+        androidBreakSkipBtn.textContent = 'Skip Break';
+      }
+    }
+
+    function showAndroidBreakOverlay(status) {
+      if (!androidBreakOverlayEl) return;
+      androidBreakMessageEl.textContent = status.current_break?.template_name
+        ? labelFromTemplate(status.current_break.template_name)
+        : status.current_break?.kind === 'long'
+          ? 'Take a Long Break'
+          : 'Take a Short Break';
+      const remainingSeconds = status.seconds_remaining ?? status.current_break?.duration_seconds ?? 0;
+      androidBreakTimerEl.textContent = formatSeconds(remainingSeconds);
+      const currentBreakMandatory = Boolean(status.current_break?.mandatory);
+      setAndroidSkipState(status.can_skip, status.skip_limit_reached, currentBreakMandatory);
+      androidBreakOverlayEl.style.display = 'flex';
+      androidOverlayVisible = true;
+    }
+
+    function hideAndroidBreakOverlay() {
+      if (!androidBreakOverlayEl) return;
+      androidBreakOverlayEl.style.display = 'none';
+      androidOverlayVisible = false;
+    }
+
+    async function syncEngineStatus() {
+      const status = await invoke('get_engine_status');
+      const remaining = status.seconds_remaining == null ? '' : ` (${formatSeconds(status.seconds_remaining)})`;
+      const postpone = status.postpone_reason ? `, postponed by ${status.postpone_reason}` : '';
+
+      if (status.phase === 'running') {
+        statusEl.textContent = `Running${remaining}`;
+        statusEl.style.color = 'green';
+        countdownLabelEl.textContent = 'Next break in';
+        countdownValueEl.textContent = formatSeconds(status.seconds_remaining ?? 0);
+        countdownValueEl.style.color = '#1d3557';
+        breakWindowVisible = false;
+      } else if (status.phase === 'warning') {
+        statusEl.textContent = `Warning before break${remaining}${postpone}`;
+        statusEl.style.color = '#b26a00';
+        countdownLabelEl.textContent = 'Break starts in';
+        countdownValueEl.textContent = formatSeconds(status.seconds_remaining ?? 0);
+        countdownValueEl.style.color = '#b26a00';
+      } else if (status.phase === 'on_break') {
+        const template = status.current_break?.template_name
+          ? `: ${labelFromTemplate(status.current_break.template_name)}`
+          : '';
+        statusEl.textContent = `Break in progress${remaining}${template}`;
+        statusEl.style.color = '#1f5fbf';
+        countdownLabelEl.textContent = 'Break in progress';
+        countdownValueEl.textContent = formatSeconds(status.seconds_remaining ?? 0);
+        countdownValueEl.style.color = '#1f5fbf';
+        const androidManaged = isAndroidBridgeAvailable();
+        if (!androidManaged && !breakWindowVisible) {
+          breakWindowVisible = true;
+          await invoke('show_break_window');
+        }
+        if (androidManaged) {
+          showAndroidBreakOverlay(status);
+        }
+      } else if (status.phase === 'disabled') {
+        statusEl.textContent = `Reminders disabled${remaining}`;
+        statusEl.style.color = '#7a4d00';
+        countdownLabelEl.textContent = 'Reminders resume in';
+        countdownValueEl.textContent = formatSeconds(status.seconds_remaining ?? 0);
+        countdownValueEl.style.color = '#7a4d00';
+      } else {
+        statusEl.textContent = 'Not started';
+        statusEl.style.color = 'inherit';
+        countdownLabelEl.textContent = 'Next break in';
+        countdownValueEl.textContent = '0:00';
+        countdownValueEl.style.color = '#1d3557';
+        breakWindowVisible = false;
+      }
+
+      if (status.phase !== 'on_break' && androidOverlayVisible) {
+        hideAndroidBreakOverlay();
+      }
+
+    }
+
+    async function syncActivitySignals() {
+      try {
+        if (isAndroidBridgeAvailable()) {
+          await invoke('set_idle_active', { active: document.hidden });
+          await invoke('set_fullscreen_active', { active: Boolean(document.fullscreenElement) });
+        } else {
+          await invoke('sync_desktop_window_state');
+        }
+      } catch (error) {
+        console.error('Failed to sync activity signals:', error);
+      }
+    }
+
+    function renderDisableOptions(options) {
+      disableOptionsEl.innerHTML = '';
+      if (!options?.length) {
+        return;
+      }
+
+      const heading = document.createElement('p');
+      heading.textContent = 'Disable reminders';
+      disableOptionsEl.appendChild(heading);
+
+      options.forEach((option) => {
+        const button = document.createElement('button');
+        const unit = option.time === 1 ? option.unit : `${option.unit}s`;
+        button.textContent = `${option.time} ${unit}`;
+        button.addEventListener('click', async () => {
+          try {
+            await invoke('disable_reminders', {
+              seconds: option.unit === 'hour' ? option.time * 60 * 60 : option.time * 60,
+            });
+            await syncEngineStatus();
+          } catch (error) {
+            statusEl.textContent = `Error: ${error}`;
+            statusEl.style.color = 'red';
+          }
+        });
+        disableOptionsEl.appendChild(button);
+      });
+    }
+
+    async function waitForAndroidBridge(timeoutMs = 2000) {
+      const deadline = Date.now() + timeoutMs;
+
+      while (Date.now() < deadline) {
+        if (window.AndroidBridge?.startBreakService && window.AndroidBridge?.stopBreakService) {
+          return window.AndroidBridge;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      throw new Error('Android bridge is unavailable. Background service only works on Android after the bridge loads.');
+    }
+
+    async function bootstrapTimer() {
+      const schedule = await invoke('get_break_schedule');
+      renderDisableOptions(schedule.disable_options);
+      await syncAndroidAlertCapability();
+      await syncActivitySignals();
+      await syncEngineStatus();
+      startStatusPolling();
+
+      if (isAndroidBridgeAvailable()) {
+        const bridge = await waitForAndroidBridge();
+        ensureAndroidMainScreenChrome();
+        bridge.startBreakService();
+      }
+    }
+
     // Start service
     document.getElementById('startService').addEventListener('click', async () => {
       try {
-        console.log("Bridge ping:", window.AndroidBridge.ping());
         statusEl.textContent = 'Starting service...';
-        console.log('Calling start_background_service...');
-        window.AndroidBridge.startBreakService();
-        statusEl.textContent = 'Service started! Break timer running.';
+        ensureAndroidMainScreenChrome();
+
+        if (isAndroidBridgeAvailable()) {
+          const bridge = await waitForAndroidBridge();
+          ensureAndroidMainScreenChrome();
+          console.log("Bridge ping:", bridge.ping?.());
+          const schedule = await invoke('get_break_schedule');
+          renderDisableOptions(schedule.disable_options);
+          await syncAndroidAlertCapability();
+          await invoke('start_break_timer');
+          await syncActivitySignals();
+          await syncEngineStatus();
+          startStatusPolling();
+          bridge.startBreakService();
+          statusEl.textContent = 'Service started! Break timer running.';
+        } else {
+          const schedule = await invoke('get_break_schedule');
+          renderDisableOptions(schedule.disable_options);
+          await syncAndroidAlertCapability();
+          await invoke('start_break_timer');
+          await syncActivitySignals();
+          await syncEngineStatus();
+          startStatusPolling();
+        }
+
         statusEl.style.color = 'green';
         console.log('Service started successfully');
       } catch (error) {
@@ -97,9 +460,21 @@
     document.getElementById('stopService').addEventListener('click', async () => {
       try {
         statusEl.textContent = 'Stopping service...';
-        console.log('Calling stop_background_service...');
-        window.AndroidBridge.stopBreakService();
-        statusEl.textContent = 'Service stopped.';
+        ensureAndroidMainScreenChrome();
+
+        if (isAndroidBridgeAvailable()) {
+          const bridge = await waitForAndroidBridge();
+          stopStatusPolling();
+          await invoke('stop_break_timer');
+          await syncEngineStatus();
+          bridge.stopBreakService();
+          statusEl.textContent = 'Service stopped.';
+        } else {
+          stopStatusPolling();
+          await invoke('stop_break_timer');
+          await syncEngineStatus();
+        }
+
         statusEl.style.color = 'orange';
         console.log('Service stopped successfully');
       } catch (error) {
@@ -114,12 +489,75 @@
       try {
         statusEl.textContent = 'Showing break screen...';
         await invoke('show_break_window');
+        breakWindowVisible = true;
       } catch (error) {
         statusEl.textContent = `Error: ${error}`;
         statusEl.style.color = 'red';
         console.error('Failed to show break:', error);
       }
     });
+
+    if (androidBreakSkipBtn) {
+      androidBreakSkipBtn.addEventListener('click', async () => {
+        try {
+          await invoke('skip_break');
+        } catch (error) {
+          console.error('Failed to skip break via overlay:', error);
+        } finally {
+          await syncEngineStatus();
+        }
+      });
+    }
+
+    document.getElementById('openFullScreenAlertSettings')?.addEventListener('click', async () => {
+      try {
+        const bridge = await waitForAndroidBridge();
+        bridge.openFullScreenAlertSettings?.();
+      } catch (error) {
+        console.error('Failed to open full-screen alert settings:', error);
+      }
+    });
+
+    document.getElementById('openNotificationSettings')?.addEventListener('click', async () => {
+      try {
+        const bridge = await waitForAndroidBridge();
+        bridge.openNotificationSettings?.();
+      } catch (error) {
+        console.error('Failed to open notification settings:', error);
+      }
+    });
+
+    document.getElementById('openOverlaySettings')?.addEventListener('click', async () => {
+      try {
+        const bridge = await waitForAndroidBridge();
+        bridge.openOverlaySettings?.();
+      } catch (error) {
+        console.error('Failed to open overlay settings:', error);
+      }
+    });
+
+    bootstrapTimer().catch((error) => {
+      console.error('Failed to bootstrap timer:', error);
+      statusEl.textContent = `Error: ${error}`;
+      statusEl.style.color = 'red';
+    });
+
+    window.addEventListener('focus', ensureAndroidMainScreenChrome);
+    window.addEventListener('pageshow', ensureAndroidMainScreenChrome);
+
+    document.addEventListener('visibilitychange', () => {
+      ensureAndroidMainScreenChrome();
+      syncActivitySignals();
+      syncAndroidAlertCapability();
+    });
+
+    document.addEventListener('fullscreenchange', () => {
+      syncActivitySignals();
+    });
+
+    setInterval(() => {
+      ensureAndroidMainScreenChrome();
+    }, 1000);
   </script>
 </body>
 </html>

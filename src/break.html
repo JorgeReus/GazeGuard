@@ -20,6 +20,7 @@
       align-items: center;
       height: 100vh;
       overflow: hidden;
+      padding: 24px 24px 120px;
     }
     .message {
       font-size: 48px;
@@ -33,8 +34,6 @@
       font-variant-numeric: tabular-nums;
     }
     .skip-button {
-      position: absolute;
-      bottom: 40px;
       background: rgba(255, 255, 255, 0.1);
       border: 1px solid rgba(255, 255, 255, 0.3);
       color: white;
@@ -47,22 +46,101 @@
     .skip-button:hover {
       background: rgba(255, 255, 255, 0.2);
     }
+    .action-bar {
+      position: absolute;
+      left: 40px;
+      right: 40px;
+      bottom: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+    .postpone-controls {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+    .postpone-button {
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      color: white;
+      padding: 12px 30px;
+      border-radius: 6px;
+      font-size: 16px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .postpone-button:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+    .postpone-menu {
+      position: absolute;
+      right: 0;
+      bottom: calc(100% + 8px);
+      display: none;
+      flex-direction: column;
+      min-width: 180px;
+      padding: 8px;
+      border-radius: 10px;
+      background: rgba(18, 18, 18, 0.96);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+      gap: 6px;
+    }
+    .postpone-option {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: white;
+      padding: 12px 14px;
+      border-radius: 8px;
+      font-size: 15px;
+      text-align: left;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .postpone-option:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
   </style>
 </head>
 <body>
-  <div class="message">Take a Break</div>
-  <div class="timer" id="timer">1:00</div>
-  <button class="skip-button" id="skip">Skip Break</button>
+  <div class="message" id="message">Take a Break</div>
+  <div class="timer" id="timer">0:00</div>
+  <div class="action-bar">
+    <button class="skip-button" id="skip">Skip Break</button>
+    <div class="postpone-controls" id="postponeControls">
+      <button class="postpone-button" id="postpone">Postpone Break</button>
+      <div class="postpone-menu" id="postponeMenu"></div>
+    </div>
+  </div>
 
 <script>
-  const { invoke } = window.__TAURI__.core;
-
-  let timeLeft = 0;
+  let invoke;
   const timerElement = document.getElementById('timer');
   const skipButton = document.getElementById('skip');
+  const postponeButton = document.getElementById('postpone');
+  const postponeControls = document.getElementById('postponeControls');
+  const postponeMenu = document.getElementById('postponeMenu');
+  const messageElement = document.getElementById('message');
+  let timerId = null;
+  let timeLeft = 0;
+  let engineStatusErrorShown = false;
+  let postponeOptions = [];
+  let postponeEnabled = false;
 
-  if (window.AndroidBridge?.enterImmersiveMode) {
-    window.AndroidBridge.enterImmersiveMode();
+  async function waitForTauriInvoke() {
+    if (window.__TAURI__?.core?.invoke) {
+      return window.__TAURI__.core.invoke;
+    }
+    return new Promise((resolve) => {
+      const intervalId = setInterval(() => {
+        if (window.__TAURI__?.core?.invoke) {
+          clearInterval(intervalId);
+          resolve(window.__TAURI__.core.invoke);
+        }
+      }, 50);
+    });
   }
 
   function formatTime(seconds) {
@@ -71,22 +149,78 @@
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   }
 
-  async function initBreak() {
-    const info = await invoke('get_next_break_info');
-    timeLeft = info.duration_seconds;
+  function labelFromTemplate(name) {
+    return name
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  }
 
-    // Optional: show kind in UI if you want
-    // document.querySelector('.message').textContent =
-    //   info.kind === 'long' ? 'Take a Long Break' : 'Take a Short Break';
-
-    if (info.mandatory) {
-      skipButton.disabled = true;
-      skipButton.style.opacity = '0.4';
-      skipButton.style.cursor = 'not-allowed';
+  function setSkipState(canSkip, skipLimitReached) {
+    const disabled = skipLimitReached || !canSkip;
+    skipButton.disabled = disabled;
+    skipButton.style.opacity = disabled ? '0.4' : '1';
+    skipButton.style.cursor = disabled ? 'not-allowed' : 'pointer';
+    if (skipLimitReached) {
+      skipButton.textContent = 'Skip Locked';
+    } else if (!canSkip) {
       skipButton.textContent = 'Mandatory Break';
+    } else {
+      skipButton.textContent = 'Skip Break';
     }
+  }
 
-    updateTimer();
+  function setPostponeState(canPostpone) {
+    postponeEnabled = canPostpone && postponeOptions.length > 0;
+    postponeControls.style.display = postponeOptions.length ? 'flex' : 'none';
+    postponeButton.disabled = !postponeEnabled;
+    postponeButton.style.opacity = postponeEnabled ? '1' : '0.4';
+    postponeButton.style.cursor = postponeEnabled ? 'pointer' : 'not-allowed';
+    postponeButton.textContent = postponeEnabled ? 'Postpone Break' : 'Postpone Disabled';
+    if (!postponeEnabled) {
+      hidePostponeMenu();
+    }
+  }
+
+  function formatPostponeOption(option) {
+    const labelUnit = option.duration === 1
+      ? option.unit.replace(/s$/, '')
+      : option.unit;
+    return `${option.duration} ${labelUnit}`;
+  }
+
+  function renderPostponeOptions(options) {
+    postponeOptions = options ?? [];
+    postponeMenu.innerHTML = '';
+
+    postponeOptions.forEach((option) => {
+      const optionEl = document.createElement('button');
+      optionEl.type = 'button';
+      optionEl.className = 'postpone-option';
+      optionEl.textContent = formatPostponeOption(option);
+      optionEl.addEventListener('click', async () => {
+        try {
+          if (timerId !== null) {
+            clearTimeout(timerId);
+            timerId = null;
+          }
+          await invoke('postpone_break', { seconds: option.seconds });
+        } catch (e) {
+          console.error(e);
+        }
+      });
+      postponeMenu.appendChild(optionEl);
+    });
+
+    postponeControls.style.display = postponeOptions.length ? 'flex' : 'none';
+  }
+
+  function showPostponeMenu() {
+    if (!postponeEnabled) return;
+    postponeMenu.style.display = 'flex';
+  }
+
+  function hidePostponeMenu() {
+    postponeMenu.style.display = 'none';
   }
 
   function updateTimer() {
@@ -97,20 +231,104 @@
       return;
     }
 
-    timeLeft--;
-    setTimeout(updateTimer, 1000);
+    timeLeft -= 1;
+    timerId = setTimeout(updateTimer, 1000);
+  }
+
+  function showBreakUnavailable(message) {
+    messageElement.textContent = message;
+    timerElement.textContent = '0:00';
+    skipButton.disabled = true;
+    skipButton.style.opacity = '0.4';
+    skipButton.style.cursor = 'not-allowed';
+    skipButton.textContent = 'Break Ended';
+    setPostponeState(false);
+  }
+
+  function applyBreakState(info, status) {
+    timeLeft = status?.seconds_remaining ?? info.duration_seconds;
+    messageElement.textContent = info.template_name
+      ? labelFromTemplate(info.template_name)
+      : (info.kind === 'long' ? 'Take a Long Break' : 'Take a Short Break');
+    setSkipState(Boolean(status?.can_skip), Boolean(status?.skip_limit_reached));
+    setPostponeState(Boolean(status?.can_postpone));
+    updateTimer();
+  }
+
+  async function initBreak() {
+    try {
+      const schedule = await invoke('get_break_schedule');
+      renderPostponeOptions(schedule.postpone_options);
+    } catch (error) {
+      console.error('Failed to load break schedule on break page', error);
+    }
+
+    let status;
+    try {
+      status = await invoke('get_engine_status');
+      console.log('break.html engine status', status);
+    } catch (error) {
+      console.error('Failed to load engine status for break page', error);
+    }
+
+    if (status?.phase === 'on_break' && status.current_break) {
+      applyBreakState(status.current_break, status);
+      return;
+    }
+
+    try {
+      const info = await invoke('get_current_break_info');
+      applyBreakState(info, status);
+      return;
+    } catch (error) {
+      console.error('No active break info available on break page', error);
+    }
+
+    if (!engineStatusErrorShown) {
+      engineStatusErrorShown = true;
+      showBreakUnavailable('Break already ended');
+    }
   }
 
   skipButton.addEventListener('click', async () => {
     try {
+      if (timerId !== null) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
       await invoke('skip_break');
     } catch (e) {
       console.error(e);
-      // If mandatory, Rust will reject; UI already disables it, but this is safety.
     }
   });
 
-  initBreak().catch(console.error);
+  postponeButton.addEventListener('click', async () => {
+    if (!postponeEnabled) {
+      return;
+    }
+
+    if (postponeMenu.style.display === 'flex') {
+      hidePostponeMenu();
+    } else {
+      showPostponeMenu();
+    }
+  });
+
+  document.addEventListener('click', (event) => {
+    if (!postponeControls.contains(event.target)) {
+      hidePostponeMenu();
+    }
+  });
+
+  async function bootstrap() {
+    invoke = await waitForTauriInvoke();
+    if (window.AndroidBridge?.enterImmersiveMode) {
+      window.AndroidBridge.enterImmersiveMode();
+    }
+    await initBreak();
+  }
+
+  bootstrap().catch(console.error);
 </script>
 </body>
 </html>

@@ -1,0 +1,46 @@
+meta:
+  config_version: "6.0.4"
+random_order: true
+allow_postpone: true
+short_break_interval: 15
+long_break_interval: 75
+long_break_duration: 60
+pre_break_warning_time: 10
+short_break_duration: 15
+persist_state: true
+postpone_duration: 5
+postpone_unit: minutes
+postpone_options:
+  - duration: 5
+    unit: minutes
+  - duration: 10
+    unit: minutes
+  - duration: 15
+    unit: minutes
+strict_break: false
+consecutive_skip_limit: 2
+idle_time: 5
+disable_options:
+  - label: for_x_minutes
+    time: 30
+    unit: minute
+  - label: for_x_hour
+    time: 1
+    unit: hour
+  - label: for_x_hours
+    time: 2
+    unit: hour
+  - label: for_x_hours
+    time: 3
+    unit: hour
+short_breaks:
+  - name: Gently close your eyes
+  - name: Roll your eyes a few times to each side
+  - name: Rotate your eyes in clockwise direction
+  - name: Rotate your eyes in counterclockwise direction
+  - name: Blink your eyes
+  - name: Focus on a point in the far distance
+  - name: Have some water
+long_breaks:
+  - name: Walk for a while
+  - name: Lean back at your seat and relax
