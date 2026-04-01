@@ -1,6 +1,6 @@
 # Safe Eyes Next Session Handoff
 
-Refreshed on `2026-03-30` to align the handoff with the current branch head and current repo state.
+Refreshed on `2026-03-31` to align the handoff with the current branch head and current repo state.
 
 ## Current Branch State
 
@@ -33,7 +33,8 @@ Refreshed on `2026-03-30` to align the handoff with the current branch head and 
   - `src-tauri/src/lib.rs`
   - `src-tauri/Cargo.toml`
 - on `macOS`, desktop idle detection now uses native OS inactivity rather than the old focus/minimize heuristic
-- Linux and Windows still use the existing window-state fallback path through the same module boundary
+- Linux now has Wayland-session detection and a dedicated provider path inside `src-tauri/src/desktop_signals.rs`, but it still falls back to the existing heuristic behavior
+- Windows still uses the existing window-state fallback path through the same module boundary
 - the stale shortcut config fields were removed from:
   - `src-tauri/gen/android/app/src/main/assets/config/defaults.yaml`
   - `src-tauri/src/break_engine.rs`
@@ -83,6 +84,10 @@ Additional verification completed after the last handoff:
 - `cargo test` now passes with the desktop-signals work in place
 - desktop signal fallback tests cover unfocused, minimized, hidden, and no-window cases
 - desktop signal integration tests cover both setting and clearing idle/fullscreen state
+- Linux desktop-signal tests now cover:
+  - Linux fallback decision helpers
+  - Wayland session detection
+  - Wayland-ready versus fallback-only helper paths
 
 ## What Changed Since The Previous Handoff
 
@@ -106,16 +111,29 @@ The older handoff is now stale in a few important ways:
 
 ## Remaining Gaps That Still Matter
 
-### 1. Linux and Windows still use the fallback desktop signal path
+### 1. Linux native idle is not implemented yet, only scaffolded
 
-The `desktop_signals` abstraction is in place, but only `macOS` has a native idle implementation today.
+The `desktop_signals` abstraction is in place, and Linux now has dedicated provider scaffolding plus Wayland session detection, but it does not yet have a working native idle implementation.
 
 Current concrete state:
 - `src-tauri/src/desktop_signals.rs` has a native `macOS` idle path
-- Linux and Windows still route through the fallback window heuristic
+- Linux has:
+  - `linux_prefers_wayland_session(...)`
+  - Linux-specific fallback decision helpers
+  - a dedicated Linux provider branch
+  - no working native Wayland idle query in the current safe state
+- Windows still routes through the fallback window heuristic
+
+Important note for next session:
+- a naive Wayland probe using `ext_idle_notify_v1` was attempted and then backed out
+- the problem was semantic, not just compile-related:
+  - that protocol is event-driven, not a simple synchronous "current idle time" query
+  - a one-shot polling model cannot rely on it without a longer-lived client/event-loop design
+- do not reintroduce the reverted probe shape without redesigning the Linux idle approach first
 
 Implication for next session:
-- Linux is the next platform to improve
+- Linux is still the next platform to improve
+- but the next step is design/architecture work for a long-lived Wayland idle client, not just wiring another helper
 - Windows should follow after Linux if cross-platform desktop fidelity remains the priority
 
 ### 2. Fullscreen/session fidelity is still heuristic on all desktop targets
@@ -137,8 +155,9 @@ The Android overlay postpone/skip controls now work, but the remaining work here
 
 Start with Linux:
 - keep the existing `desktop_signals` boundary
-- add a Linux-native idle provider
 - preserve the current fallback path until the Linux implementation is stable
+- redesign the Linux native idle approach around a long-lived Wayland client or other viable Wayland-compatible mechanism
+- do not reuse the reverted one-shot `ext_idle_notify_v1` probe pattern
 
 Primary files:
 - `src-tauri/src/desktop_signals.rs`
@@ -154,7 +173,7 @@ After Linux idle support is in place:
 ## Suggested Resume Prompt
 
 ```text
-Continue Safe Eyes parity work on feat/safe-eyes-compat from the current desktop-signals state. Android Rust-driven delivery, random_order, config-driven postpone, and persist_state are implemented and validated on desktop and Android. The stale shortcut config fields were removed, and `macOS` now uses native idle detection through `src-tauri/src/desktop_signals.rs`. The next highest-value work is extending native desktop idle support to Linux while keeping the current abstraction boundary and fallback path intact.
+Continue Safe Eyes parity work on feat/safe-eyes-compat from the current desktop-signals state. Android Rust-driven delivery, random_order, config-driven postpone, and persist_state are implemented and validated on desktop and Android. The stale shortcut config fields were removed, and `macOS` now uses native idle detection through `src-tauri/src/desktop_signals.rs`. Linux has dedicated provider scaffolding and Wayland session detection, but native Wayland idle is not implemented in the current safe state because the attempted one-shot `ext_idle_notify_v1` probe was semantically wrong for this polling architecture. The next highest-value work is redesigning Linux native idle support while keeping the current abstraction boundary and fallback path intact.
 ```
 
 ## Quick Verification Commands For The Next Session
@@ -167,4 +186,5 @@ Focused Android unit tests:
 
 Useful searches before coding:
 - `rg -n "desktop_signals|collect_desktop_signals|idle_active_from_seconds" src-tauri/src`
+- `rg -n "linux_prefers_wayland_session|linux_native_idle_active_from_env|linux_should_query_native_idle" src-tauri/src/desktop_signals.rs`
 - `rg -n "shortcut_disable_time|shortcut_skip|shortcut_postpone" src-tauri src`
