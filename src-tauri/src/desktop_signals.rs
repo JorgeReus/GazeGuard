@@ -139,6 +139,34 @@ fn windows_other_app_fullscreen_from_bounds(
     Some(screen_rect_covers_monitor(foreground_bounds, monitor_bounds))
 }
 
+fn macos_signals_from_sources(
+    fallback: DesktopSignals,
+    native_idle_active: Option<bool>,
+    native_fullscreen_active: Option<bool>,
+) -> DesktopSignals {
+    DesktopSignals {
+        fullscreen_active: native_fullscreen_active.unwrap_or(fallback.fullscreen_active),
+        idle_active: native_idle_active.unwrap_or(fallback.idle_active),
+    }
+}
+
+fn macos_other_app_fullscreen_from_bounds(
+    frontmost_window: Option<usize>,
+    app_window: Option<usize>,
+    frontmost_bounds: Option<ScreenRect>,
+    screen_bounds: Option<ScreenRect>,
+) -> Option<bool> {
+    let frontmost_window = frontmost_window?;
+
+    if app_window.is_some_and(|app_window| app_window == frontmost_window) {
+        return Some(false);
+    }
+
+    let frontmost_bounds = frontmost_bounds?;
+    let screen_bounds = screen_bounds?;
+    Some(screen_rect_covers_monitor(frontmost_bounds, screen_bounds))
+}
+
 #[cfg(all(desktop, target_os = "linux"))]
 mod platform {
     use super::{
@@ -382,7 +410,8 @@ mod tests {
     use super::{
         desktop_signals_from_window_state, fallback_from_window_state, idle_active_from_seconds,
         linux_idle_from_sources, linux_native_idle_active_from_env, linux_prefers_wayland_session,
-        linux_should_query_native_idle, screen_rect_covers_monitor,
+        linux_should_query_native_idle, macos_other_app_fullscreen_from_bounds,
+        macos_signals_from_sources, screen_rect_covers_monitor,
         windows_other_app_fullscreen_from_bounds, windows_signals_from_sources, DesktopSignals,
         ScreenRect, WindowStateSnapshot,
     };
@@ -589,6 +618,24 @@ mod tests {
     }
 
     #[test]
+    fn macos_signals_from_sources_uses_native_values_when_present() {
+        let fallback = DesktopSignals {
+            fullscreen_active: false,
+            idle_active: true,
+        };
+
+        let signals = macos_signals_from_sources(fallback, Some(false), Some(true));
+
+        assert_eq!(
+            signals,
+            DesktopSignals {
+                fullscreen_active: true,
+                idle_active: false,
+            }
+        );
+    }
+
+    #[test]
     fn windows_fullscreen_helper_rejects_own_app_window() {
         let foreground = Some(10);
         let app = Some(10);
@@ -601,6 +648,21 @@ mod tests {
 
         assert_eq!(
             windows_other_app_fullscreen_from_bounds(foreground, app, bounds, bounds),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn macos_fullscreen_helper_rejects_own_app_window() {
+        let screen = ScreenRect {
+            left: 0,
+            top: 0,
+            right: 1728,
+            bottom: 1117,
+        };
+
+        assert_eq!(
+            macos_other_app_fullscreen_from_bounds(Some(42), Some(42), Some(screen), Some(screen)),
             Some(false)
         );
     }
