@@ -1,12 +1,11 @@
 # Safe Eyes Next Session Handoff
 
-Refreshed on `2026-03-31` to align the handoff with the current branch head and current repo state.
+Refreshed on `2026-04-01` to align the handoff with the current branch head and current repo state.
 
 ## Current Branch State
 
-- Branch: `feat/safe-eyes-compat`
-- Current HEAD: `aa2fe38`
-- Working tree status at handoff time: dirty with uncommitted desktop-signal work and matching spec/plan docs
+- Branch: `main`
+- Working tree status at handoff time: includes updated handoff/spec/plan docs plus in-progress desktop-signal follow-up
 
 ## What Is In Place Now
 
@@ -34,7 +33,7 @@ Refreshed on `2026-03-31` to align the handoff with the current branch head and 
   - `src-tauri/Cargo.toml`
 - on `macOS`, desktop idle detection now uses native OS inactivity rather than the old focus/minimize heuristic
 - Linux now has Wayland-session detection and a dedicated provider path inside `src-tauri/src/desktop_signals.rs`, but it still falls back to the existing heuristic behavior
-- Windows still uses the existing window-state fallback path through the same module boundary
+- Windows now has a native provider path for OS idle and "other app is fullscreen" detection inside `src-tauri/src/desktop_signals.rs`
 - the stale shortcut config fields were removed from:
   - `src-tauri/gen/android/app/src/main/assets/config/defaults.yaml`
   - `src-tauri/src/break_engine.rs`
@@ -88,6 +87,12 @@ Additional verification completed after the last handoff:
   - Linux fallback decision helpers
   - Wayland session detection
   - Wayland-ready versus fallback-only helper paths
+- Windows desktop-signal tests now cover:
+  - native/fallback signal composition helpers
+  - own-window fullscreen exclusion
+  - monitor-coverage fullscreen helpers
+- Windows compile verification now passes with:
+  - `PATH=/opt/homebrew/opt/llvm/bin:$PATH cargo check --target x86_64-pc-windows-msvc`
 
 ## What Changed Since The Previous Handoff
 
@@ -108,21 +113,30 @@ The older handoff is now stale in a few important ways:
   - manual relaunch validation was completed on desktop and Android
 - the old shortcut-config gap is no longer relevant because those dead keys were removed from the shipped config and parser
 - desktop signal quality is no longer purely heuristic on `macOS`
+- Windows no longer relies purely on the Tauri-window heuristic for idle/fullscreen signals
 
 ## Remaining Gaps That Still Matter
 
-### 1. Linux native idle is not implemented yet, only scaffolded
+### 1. macOS stabilization and validation should come first
 
-The `desktop_signals` abstraction is in place, and Linux now has dedicated provider scaffolding plus Wayland session detection, but it does not yet have a working native idle implementation.
+The current priority is to stabilize the `macOS` path before more platform-native signal work lands on Linux or Windows.
 
 Current concrete state:
 - `src-tauri/src/desktop_signals.rs` has a native `macOS` idle path
+- Windows now has a native provider for:
+  - OS idle detection
+  - "another app is fullscreen" detection
 - Linux has:
   - `linux_prefers_wayland_session(...)`
   - Linux-specific fallback decision helpers
   - a dedicated Linux provider branch
   - no working native Wayland idle query in the current safe state
-- Windows still routes through the fallback window heuristic
+
+Recommended focus before more platform work:
+- manual `macOS` validation around real inactivity, fullscreen behavior, and regression checks
+- fix any `macOS` desktop-signal regressions before expanding Linux or Windows further
+
+### 2. Linux native idle is not implemented yet, only scaffolded
 
 Important note for next session:
 - a naive Wayland probe using `ext_idle_notify_v1` was attempted and then backed out
@@ -132,17 +146,16 @@ Important note for next session:
 - do not reintroduce the reverted probe shape without redesigning the Linux idle approach first
 
 Implication for next session:
-- Linux is still the next platform to improve
-- but the next step is design/architecture work for a long-lived Wayland idle client, not just wiring another helper
-- Windows should follow after Linux if cross-platform desktop fidelity remains the priority
+- Linux work is deferred until after `macOS` is stable
+- when resumed, the next step is design/architecture work for a long-lived Wayland idle client, not just wiring another helper
 
-### 2. Fullscreen/session fidelity is still heuristic on all desktop targets
+### 3. Fullscreen/session fidelity is still heuristic on some desktop targets
 
-The current work improved idle detection on `macOS`, but fullscreen still uses the existing window fullscreen heuristic inside `desktop_signals`.
+The current work improved idle detection on `macOS` and added a native fullscreen path on Windows, but fullscreen/session fidelity is still incomplete across the desktop targets overall.
 
 This is acceptable for now, but it remains a fidelity gap if stricter Safe Eyes parity is required later.
 
-### 3. Android overlay UX could still be refined
+### 4. Android overlay UX could still be refined
 
 The Android overlay postpone/skip controls now work, but the remaining work here is polish rather than missing core functionality:
 - spacing/styling polish
@@ -151,26 +164,39 @@ The Android overlay postpone/skip controls now work, but the remaining work here
 
 ## Recommended Next Session Order
 
-### Task 1: Extend native desktop idle support beyond `macOS`
+### Task 1: Stabilize and validate `macOS`
 
-Start with Linux:
+Before more Linux or Windows work:
+- manually validate native `macOS` idle behavior during real inactivity and active use
+- verify fullscreen/session behavior did not regress on `macOS`
+- fix any `macOS` desktop-signal regressions first
+
+Manual `macOS` validation checklist:
+- confirm active typing/mouse movement keeps `idle_active` false
+- confirm real inactivity flips `idle_active` true after the expected delay
+- confirm a foreign fullscreen app triggers `fullscreen_active`
+- confirm GazeGuard itself does not count as the fullscreen app
+- confirm fallback behavior remains sane if native fullscreen lookup fails
+
+Primary files:
+- `src-tauri/src/desktop_signals.rs`
+- `src-tauri/src/lib.rs`
+
+### Task 2: Revisit Linux native idle later
+
+After `macOS` is stable:
 - keep the existing `desktop_signals` boundary
 - preserve the current fallback path until the Linux implementation is stable
 - redesign the Linux native idle approach around a long-lived Wayland client or other viable Wayland-compatible mechanism
 - do not reuse the reverted one-shot `ext_idle_notify_v1` probe pattern
 
-Primary files:
-- `src-tauri/src/desktop_signals.rs`
-- `src-tauri/src/lib.rs`
-- `src-tauri/Cargo.toml`
+### Task 3: Revisit Windows follow-up later
 
-### Task 2: Revisit fullscreen/session fidelity later
+After `macOS` is stable:
+- manually validate the Windows native idle/fullscreen provider on a real Windows machine
+- only refine Windows signals further if manual validation exposes gaps
 
-After Linux idle support is in place:
-- better fullscreen/session detection on `macOS`
-- decide whether Linux or Windows also need native fullscreen/session signals
-
-### Task 3: Performance tuning pass
+### Task 4: Performance tuning pass
 
 After desktop signal fidelity work is stable:
 - profile baseline memory usage on desktop and Android
@@ -182,7 +208,7 @@ After desktop signal fidelity work is stable:
 ## Suggested Resume Prompt
 
 ```text
-Continue Safe Eyes parity work on feat/safe-eyes-compat from the current desktop-signals state. Android Rust-driven delivery, random_order, config-driven postpone, and persist_state are implemented and validated on desktop and Android. The stale shortcut config fields were removed, and `macOS` now uses native idle detection through `src-tauri/src/desktop_signals.rs`. Linux has dedicated provider scaffolding and Wayland session detection, but native Wayland idle is not implemented in the current safe state because the attempted one-shot `ext_idle_notify_v1` probe was semantically wrong for this polling architecture. The next highest-value work is redesigning Linux native idle support while keeping the current abstraction boundary and fallback path intact.
+Continue Safe Eyes parity work from the current desktop-signals state on `main`. Android Rust-driven delivery, random_order, config-driven postpone, and persist_state are implemented and validated on desktop and Android. `macOS` uses native idle detection through `src-tauri/src/desktop_signals.rs`, Windows has a native provider for OS idle plus "other app is fullscreen" detection, and Linux still has only safe provider scaffolding plus Wayland session detection. The next highest-value work is stabilizing and manually validating the `macOS` path before resuming Linux or Windows-native follow-up.
 ```
 
 ## Quick Verification Commands For The Next Session
@@ -195,5 +221,6 @@ Focused Android unit tests:
 
 Useful searches before coding:
 - `rg -n "desktop_signals|collect_desktop_signals|idle_active_from_seconds" src-tauri/src`
+- `rg -n "windows_signals_from_sources|windows_other_app_fullscreen_from_bounds|PlatformDesktopSignalProvider" src-tauri/src/desktop_signals.rs`
 - `rg -n "linux_prefers_wayland_session|linux_native_idle_active_from_env|linux_should_query_native_idle" src-tauri/src/desktop_signals.rs`
 - `rg -n "shortcut_disable_time|shortcut_skip|shortcut_postpone" src-tauri src`
