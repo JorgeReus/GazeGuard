@@ -170,6 +170,15 @@ After Linux idle support is in place:
 - better fullscreen/session detection on `macOS`
 - decide whether Linux or Windows also need native fullscreen/session signals
 
+### Task 3: Performance tuning pass
+
+After desktop signal fidelity work is stable:
+- profile baseline memory usage on desktop and Android
+- minimize always-alive webviews and avoid hidden helper UI surfaces
+- confirm scheduler/background behavior stays in Rust or native services rather than frontend timers
+- reduce unnecessary polling, animation, and offscreen UI work on break and settings flows
+- document concrete hotspots and follow-up optimizations before broader UI polish
+
 ## Suggested Resume Prompt
 
 ```text
