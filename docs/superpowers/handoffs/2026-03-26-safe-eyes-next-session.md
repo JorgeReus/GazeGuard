@@ -4,7 +4,7 @@ Refreshed on `2026-04-01` to align the handoff with the current branch head and 
 
 ## Current Branch State
 
-- Branch: `main`
+- Branch: `feat/safe-eyes-compat`
 - Working tree status at handoff time: includes updated handoff/spec/plan docs plus in-progress desktop-signal follow-up
 
 ## What Is In Place Now
@@ -162,6 +162,27 @@ The Android overlay postpone/skip controls now work, but the remaining work here
 - touch affordance polish
 - consistency with the desktop break page
 
+### 5. Desktop signal delivery is still frontend-driven
+
+Desktop signal collection now exists in Rust, but delivery into the engine still depends on the frontend calling `sync_desktop_window_state`.
+
+Current concrete state:
+- `src-tauri/src/desktop_signals.rs` owns platform signal collection
+- `src-tauri/src/break_engine.rs` already uses `fullscreen` / `idle_active` to postpone warning and break transitions
+- `src-tauri/src/lib.rs` only applies desktop signals when `sync_desktop_window_state` is invoked
+- `src/index.html` currently drives that invocation on a one-second interval
+
+Implication:
+- fullscreen or idle suppression can fail when the desktop UI page is not actively driving the polling loop
+- the architecture still has frontend-driven delivery even though the signal logic itself has moved into Rust
+
+Direction chosen for the next session:
+- move desktop signal delivery into Rust
+- prefer a hybrid model rather than pure polling everywhere
+- use event-driven or native watcher paths where the platform makes that practical
+- keep a Rust-owned polling fallback where necessary
+- do not keep frontend polling as the source of truth for desktop signal delivery
+
 ## Recommended Next Session Order
 
 ### Task 1: Stabilize and validate `macOS`
@@ -205,10 +226,19 @@ After desktop signal fidelity work is stable:
 - reduce unnecessary polling, animation, and offscreen UI work on break and settings flows
 - document concrete hotspots and follow-up optimizations before broader UI polish
 
+### Task 5: Move desktop signal delivery into Rust with a hybrid model
+
+After `macOS` stabilization work:
+- remove the frontend as the source of truth for desktop signal delivery
+- add a Rust-owned desktop signal delivery path that keeps the engine updated even when the UI is closed
+- prefer event-driven/native delivery where a platform supports it cleanly
+- keep a Rust polling fallback where event-driven delivery is not yet practical
+- preserve the existing `desktop_signals` abstraction boundary while changing who drives the updates
+
 ## Suggested Resume Prompt
 
 ```text
-Continue Safe Eyes parity work from the current desktop-signals state on `main`. Android Rust-driven delivery, random_order, config-driven postpone, and persist_state are implemented and validated on desktop and Android. `macOS` uses native idle detection through `src-tauri/src/desktop_signals.rs`, Windows has a native provider for OS idle plus "other app is fullscreen" detection, and Linux still has only safe provider scaffolding plus Wayland session detection. The next highest-value work is stabilizing and manually validating the `macOS` path before resuming Linux or Windows-native follow-up.
+Continue Safe Eyes parity work from the current desktop-signals state on `feat/safe-eyes-compat`. Android Rust-driven delivery, random_order, config-driven postpone, and persist_state are implemented and validated on desktop and Android. `macOS` uses native idle detection through `src-tauri/src/desktop_signals.rs`, Windows has a native provider for OS idle plus "other app is fullscreen" detection, and Linux still has only safe provider scaffolding plus Wayland session detection. Desktop signal collection is in Rust, but desktop signal delivery into the engine is still frontend-driven through `sync_desktop_window_state`. The next highest-value work after current macOS validation is moving desktop signal delivery into Rust using a hybrid event-driven plus Rust-polling-fallback model.
 ```
 
 ## Quick Verification Commands For The Next Session
@@ -223,4 +253,5 @@ Useful searches before coding:
 - `rg -n "desktop_signals|collect_desktop_signals|idle_active_from_seconds" src-tauri/src`
 - `rg -n "windows_signals_from_sources|windows_other_app_fullscreen_from_bounds|PlatformDesktopSignalProvider" src-tauri/src/desktop_signals.rs`
 - `rg -n "linux_prefers_wayland_session|linux_native_idle_active_from_env|linux_should_query_native_idle" src-tauri/src/desktop_signals.rs`
+- `rg -n "sync_desktop_window_state|set_idle_active|set_fullscreen_active" src-tauri/src src`
 - `rg -n "shortcut_disable_time|shortcut_skip|shortcut_postpone" src-tauri src`

@@ -44,12 +44,13 @@ fn desktop_signals_from_window_state(window: Option<WindowStateSnapshot>) -> Des
 
 #[cfg(desktop)]
 fn desktop_window_snapshot(app: &tauri::AppHandle) -> Option<WindowStateSnapshot> {
-    app.get_webview_window("main").map(|window| WindowStateSnapshot {
-        fullscreen: window.is_fullscreen().unwrap_or(false),
-        focused: window.is_focused().unwrap_or(true),
-        minimized: window.is_minimized().unwrap_or(false),
-        visible: window.is_visible().unwrap_or(true),
-    })
+    app.get_webview_window("main")
+        .map(|window| WindowStateSnapshot {
+            fullscreen: window.is_fullscreen().unwrap_or(false),
+            focused: window.is_focused().unwrap_or(true),
+            minimized: window.is_minimized().unwrap_or(false),
+            visible: window.is_visible().unwrap_or(true),
+        })
 }
 
 #[cfg(desktop)]
@@ -136,7 +137,10 @@ fn windows_other_app_fullscreen_from_bounds(
 
     let foreground_bounds = foreground_bounds?;
     let monitor_bounds = monitor_bounds?;
-    Some(screen_rect_covers_monitor(foreground_bounds, monitor_bounds))
+    Some(screen_rect_covers_monitor(
+        foreground_bounds,
+        monitor_bounds,
+    ))
 }
 
 fn macos_signals_from_sources(
@@ -193,14 +197,33 @@ mod platform {
 
 #[cfg(all(desktop, target_os = "macos"))]
 mod platform {
+    use std::{ffi::c_void, ptr};
+
     use super::{
-        desktop_signals_from_desktop_window, idle_active_from_seconds, DesktopSignalProvider,
-        DesktopSignals,
+        desktop_signals_from_desktop_window, idle_active_from_seconds,
+        macos_other_app_fullscreen_from_bounds, macos_signals_from_sources, DesktopSignalProvider,
+        DesktopSignals, ScreenRect,
     };
-    use core_graphics::event_source::CGEventSourceStateID;
+    use core_graphics::{display::CGDisplay, event_source::CGEventSourceStateID, geometry::CGRect};
+    use tauri::Manager;
 
     pub(super) struct PlatformDesktopSignalProvider;
     pub(super) const ANY_INPUT_EVENT_TYPE: u32 = u32::MAX;
+    const CG_WINDOW_LIST_ON_SCREEN_EXCLUDING_DESKTOP: u32 = (1 << 0) | (1 << 4);
+    const K_CF_NUMBER_SINT32_TYPE: u32 = 3;
+    const K_CF_NUMBER_SINT64_TYPE: u32 = 4;
+
+    type CFArrayRef = *const c_void;
+    type CFDictionaryRef = *const c_void;
+    type CFNumberRef = *const c_void;
+    type CFStringRef = *const c_void;
+    type Sel = *const c_void;
+
+    #[derive(Clone, Copy)]
+    struct NativeWindowInfo {
+        window_number: usize,
+        bounds: ScreenRect,
+    }
 
     #[link(name = "ApplicationServices", kind = "framework")]
     unsafe extern "C" {
@@ -208,6 +231,48 @@ mod platform {
             state_id: CGEventSourceStateID,
             event_type: u32,
         ) -> f64;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFArrayGetCount(array: CFArrayRef) -> isize;
+        fn CFArrayGetValueAtIndex(array: CFArrayRef, index: isize) -> *const c_void;
+        fn CFDictionaryGetValueIfPresent(
+            dictionary: CFDictionaryRef,
+            key: *const c_void,
+            value: *mut *const c_void,
+        ) -> u8;
+        fn CFNumberGetValue(number: CFNumberRef, number_type: u32, value: *mut c_void) -> bool;
+        fn CFRelease(cf: *const c_void);
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        static kCGWindowBounds: CFStringRef;
+        static kCGWindowLayer: CFStringRef;
+        static kCGWindowNumber: CFStringRef;
+        static kCGWindowOwnerPID: CFStringRef;
+
+        fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> CFArrayRef;
+        fn CGRectMakeWithDictionaryRepresentation(
+            dictionary: CFDictionaryRef,
+            rect: *mut CGRect,
+        ) -> u8;
+    }
+
+    #[link(name = "objc")]
+    unsafe extern "C" {
+        fn objc_getClass(name: *const i8) -> *mut c_void;
+        fn sel_registerName(name: *const i8) -> Sel;
+        fn objc_autoreleasePoolPush() -> *mut c_void;
+        fn objc_autoreleasePoolPop(pool: *mut c_void);
+
+        #[link_name = "objc_msgSend"]
+        fn objc_msg_send_id(receiver: *mut c_void, op: Sel) -> *mut c_void;
+        #[link_name = "objc_msgSend"]
+        fn objc_msg_send_i32(receiver: *mut c_void, op: Sel) -> i32;
+        #[link_name = "objc_msgSend"]
+        fn objc_msg_send_isize(receiver: *mut c_void, op: Sel) -> isize;
     }
 
     fn native_idle_seconds() -> Option<f64> {
@@ -219,18 +284,224 @@ mod platform {
         })
     }
 
+    fn selector(name: &'static [u8]) -> Sel {
+        unsafe { sel_registerName(name.as_ptr().cast()) }
+    }
+
+    struct AutoreleasePool {
+        pool: *mut c_void,
+    }
+
+    impl AutoreleasePool {
+        fn new() -> Self {
+            Self {
+                pool: unsafe { objc_autoreleasePoolPush() },
+            }
+        }
+    }
+
+    impl Drop for AutoreleasePool {
+        fn drop(&mut self) {
+            unsafe { objc_autoreleasePoolPop(self.pool) };
+        }
+    }
+
+    pub(super) fn with_autorelease_pool<T>(callback: impl FnOnce() -> T) -> T {
+        let _pool = AutoreleasePool::new();
+        callback()
+    }
+
+    fn native_idle_active() -> Option<bool> {
+        native_idle_seconds().map(idle_active_from_seconds)
+    }
+
+    fn frontmost_application_pid() -> Option<i32> {
+        let workspace_class = unsafe { objc_getClass(b"NSWorkspace\0".as_ptr().cast()) };
+        if workspace_class.is_null() {
+            return None;
+        }
+
+        let workspace =
+            unsafe { objc_msg_send_id(workspace_class, selector(b"sharedWorkspace\0")) };
+        if workspace.is_null() {
+            return None;
+        }
+
+        let application =
+            unsafe { objc_msg_send_id(workspace, selector(b"frontmostApplication\0")) };
+        if application.is_null() {
+            return None;
+        }
+
+        Some(unsafe { objc_msg_send_i32(application, selector(b"processIdentifier\0")) })
+    }
+
+    fn app_window_number(app: &tauri::AppHandle) -> Option<usize> {
+        app.get_webview_window("main")
+            .and_then(|window| window.ns_window().ok())
+            .map(|handle| unsafe {
+                objc_msg_send_isize(handle.cast(), selector(b"windowNumber\0")) as usize
+            })
+    }
+
+    fn frontmost_window_info(frontmost_pid: i32) -> Option<NativeWindowInfo> {
+        let window_list =
+            unsafe { CGWindowListCopyWindowInfo(CG_WINDOW_LIST_ON_SCREEN_EXCLUDING_DESKTOP, 0) };
+        if window_list.is_null() {
+            return None;
+        }
+
+        let count = unsafe { CFArrayGetCount(window_list) };
+        let mut result = None;
+
+        for index in 0..count {
+            let entry = unsafe { CFArrayGetValueAtIndex(window_list, index) as CFDictionaryRef };
+            if entry.is_null() {
+                continue;
+            }
+
+            if dictionary_i32(entry, unsafe { kCGWindowOwnerPID }) != Some(frontmost_pid) {
+                continue;
+            }
+
+            if dictionary_i64(entry, unsafe { kCGWindowLayer }) != Some(0) {
+                continue;
+            }
+
+            let Some(bounds) = dictionary_rect(entry, unsafe { kCGWindowBounds }) else {
+                continue;
+            };
+
+            if bounds.left >= bounds.right || bounds.top >= bounds.bottom {
+                continue;
+            }
+
+            let Some(window_number) = dictionary_i64(entry, unsafe { kCGWindowNumber }) else {
+                continue;
+            };
+
+            if window_number < 0 {
+                continue;
+            }
+
+            result = Some(NativeWindowInfo {
+                window_number: window_number as usize,
+                bounds,
+            });
+            break;
+        }
+
+        unsafe { CFRelease(window_list) };
+        result
+    }
+
+    fn dictionary_value(dictionary: CFDictionaryRef, key: CFStringRef) -> Option<*const c_void> {
+        let mut value = ptr::null();
+        let present =
+            unsafe { CFDictionaryGetValueIfPresent(dictionary, key.cast(), &mut value) } != 0;
+
+        if present && !value.is_null() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn dictionary_i32(dictionary: CFDictionaryRef, key: CFStringRef) -> Option<i32> {
+        let number = dictionary_value(dictionary, key)? as CFNumberRef;
+        let mut value = 0i32;
+        let ok = unsafe {
+            CFNumberGetValue(
+                number,
+                K_CF_NUMBER_SINT32_TYPE,
+                (&mut value as *mut i32).cast(),
+            )
+        };
+
+        ok.then_some(value)
+    }
+
+    fn dictionary_i64(dictionary: CFDictionaryRef, key: CFStringRef) -> Option<i64> {
+        let number = dictionary_value(dictionary, key)? as CFNumberRef;
+        let mut value = 0i64;
+        let ok = unsafe {
+            CFNumberGetValue(
+                number,
+                K_CF_NUMBER_SINT64_TYPE,
+                (&mut value as *mut i64).cast(),
+            )
+        };
+
+        ok.then_some(value)
+    }
+
+    fn dictionary_rect(dictionary: CFDictionaryRef, key: CFStringRef) -> Option<ScreenRect> {
+        let bounds = dictionary_value(dictionary, key)? as CFDictionaryRef;
+        let mut rect = CGRect::default();
+        let ok = unsafe { CGRectMakeWithDictionaryRepresentation(bounds, &mut rect) != 0 };
+
+        ok.then_some(cg_rect_to_screen_rect(rect))
+    }
+
+    fn cg_rect_to_screen_rect(rect: CGRect) -> ScreenRect {
+        ScreenRect {
+            left: rect.origin.x.floor() as i32,
+            top: rect.origin.y.floor() as i32,
+            right: (rect.origin.x + rect.size.width).ceil() as i32,
+            bottom: (rect.origin.y + rect.size.height).ceil() as i32,
+        }
+    }
+
+    fn screen_bounds_for_window(window_bounds: ScreenRect) -> Option<ScreenRect> {
+        let mut best_match = None;
+        let mut best_overlap = 0i64;
+
+        for display_id in CGDisplay::active_displays().ok()? {
+            let bounds = cg_rect_to_screen_rect(CGDisplay::new(display_id).bounds());
+            let overlap = intersection_area(window_bounds, bounds);
+            if overlap > best_overlap {
+                best_overlap = overlap;
+                best_match = Some(bounds);
+            }
+        }
+
+        best_match
+    }
+
+    fn intersection_area(first: ScreenRect, second: ScreenRect) -> i64 {
+        let width = (first.right.min(second.right) - first.left.max(second.left)).max(0) as i64;
+        let height = (first.bottom.min(second.bottom) - first.top.max(second.top)).max(0) as i64;
+        width * height
+    }
+
+    fn native_fullscreen_active(app: &tauri::AppHandle) -> Option<bool> {
+        with_autorelease_pool(|| {
+            let frontmost_pid = frontmost_application_pid()?;
+            if frontmost_pid == std::process::id() as i32 {
+                return Some(false);
+            }
+
+            let frontmost_window = frontmost_window_info(frontmost_pid)?;
+            let screen_bounds = screen_bounds_for_window(frontmost_window.bounds)?;
+
+            macos_other_app_fullscreen_from_bounds(
+                Some(frontmost_window.window_number),
+                app_window_number(app),
+                Some(frontmost_window.bounds),
+                Some(screen_bounds),
+            )
+        })
+    }
+
     impl DesktopSignalProvider for PlatformDesktopSignalProvider {
         fn collect(&self, app: &tauri::AppHandle, idle_threshold_seconds: u64) -> DesktopSignals {
             let fallback = desktop_signals_from_desktop_window(app);
             let _ = idle_threshold_seconds;
-            let idle_active = native_idle_seconds()
-                .map(super::idle_active_from_seconds)
-                .unwrap_or(fallback.idle_active);
-
-            DesktopSignals {
-                fullscreen_active: fallback.fullscreen_active,
-                idle_active,
-            }
+            macos_signals_from_sources(
+                fallback,
+                native_idle_active(),
+                native_fullscreen_active(app),
+            )
         }
     }
 }
@@ -244,7 +515,9 @@ mod platform {
     };
     use tauri::Manager;
     use windows_sys::Win32::Foundation::{HWND, RECT};
-    use windows_sys::Win32::Graphics::Gdi::{MonitorFromWindow, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows_sys::Win32::Graphics::Gdi::{
+        MonitorFromWindow, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
     use windows_sys::Win32::System::SystemInformation::GetTickCount;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -417,6 +690,8 @@ mod tests {
     };
 
     #[cfg(all(desktop, target_os = "macos"))]
+    use super::platform::with_autorelease_pool;
+    #[cfg(all(desktop, target_os = "macos"))]
     use super::platform::ANY_INPUT_EVENT_TYPE;
 
     #[test]
@@ -585,8 +860,14 @@ mod tests {
     fn linux_native_idle_helper_is_ready_to_query_when_wayland_session_exists() {
         assert!(linux_should_query_native_idle(Some("wayland"), None));
         assert!(linux_should_query_native_idle(None, Some("wayland-0")));
-        assert_eq!(linux_native_idle_active_from_env(Some("wayland"), None), None);
-        assert_eq!(linux_native_idle_active_from_env(None, Some("wayland-0")), None);
+        assert_eq!(
+            linux_native_idle_active_from_env(Some("wayland"), None),
+            None
+        );
+        assert_eq!(
+            linux_native_idle_active_from_env(None, Some("wayland-0")),
+            None
+        );
     }
 
     #[test]
@@ -636,6 +917,16 @@ mod tests {
     }
 
     #[test]
+    fn macos_signals_from_sources_falls_back_when_native_values_are_missing() {
+        let fallback = DesktopSignals {
+            fullscreen_active: true,
+            idle_active: false,
+        };
+
+        assert_eq!(macos_signals_from_sources(fallback, None, None), fallback);
+    }
+
+    #[test]
     fn windows_fullscreen_helper_rejects_own_app_window() {
         let foreground = Some(10);
         let app = Some(10);
@@ -663,6 +954,48 @@ mod tests {
 
         assert_eq!(
             macos_other_app_fullscreen_from_bounds(Some(42), Some(42), Some(screen), Some(screen)),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn macos_fullscreen_helper_detects_foreign_window_covering_screen() {
+        let screen = ScreenRect {
+            left: 0,
+            top: 0,
+            right: 1728,
+            bottom: 1117,
+        };
+        let window = ScreenRect {
+            left: 0,
+            top: 0,
+            right: 1728,
+            bottom: 1117,
+        };
+
+        assert_eq!(
+            macos_other_app_fullscreen_from_bounds(Some(99), Some(42), Some(window), Some(screen)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn macos_fullscreen_helper_rejects_foreign_window_smaller_than_screen() {
+        let screen = ScreenRect {
+            left: 0,
+            top: 0,
+            right: 1728,
+            bottom: 1117,
+        };
+        let window = ScreenRect {
+            left: 20,
+            top: 20,
+            right: 1700,
+            bottom: 1080,
+        };
+
+        assert_eq!(
+            macos_other_app_fullscreen_from_bounds(Some(99), Some(42), Some(window), Some(screen)),
             Some(false)
         );
     }
@@ -735,5 +1068,11 @@ mod tests {
     #[test]
     fn macos_idle_query_uses_any_input_event_type_constant() {
         assert_eq!(ANY_INPUT_EVENT_TYPE, u32::MAX);
+    }
+
+    #[cfg(all(desktop, target_os = "macos"))]
+    #[test]
+    fn macos_autorelease_pool_helper_returns_closure_result() {
+        assert_eq!(with_autorelease_pool(|| 42usize), 42usize);
     }
 }
