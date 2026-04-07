@@ -138,6 +138,9 @@
   <div id="status">
     <strong>Status:</strong> <span id="statusText">Not started</span>
   </div>
+  <div id="configReloadBanner" style="display:none; margin-top: 16px; padding: 14px; border-radius: 10px; background: #ffe5e5; border: 1px solid #d99;">
+    <strong>Config error:</strong> <span id="configReloadBannerText"></span>
+  </div>
   <div id="androidAlertSetup">
     <p id="androidAlertSetupText">Android needs permission to show aggressive break alerts while the app is in the background.</p>
     <button id="openFullScreenAlertSettings">Allow Full-Screen Break Alerts</button>
@@ -162,6 +165,8 @@
     const countdownValueEl = document.getElementById('countdownValue');
     const androidAlertSetupEl = document.getElementById('androidAlertSetup');
     const androidAlertSetupTextEl = document.getElementById('androidAlertSetupText');
+    const configReloadBannerEl = document.getElementById('configReloadBanner');
+    const configReloadBannerTextEl = document.getElementById('configReloadBannerText');
     let statusPollId = null;
     let breakWindowVisible = false;
     let androidOverlayVisible = false;
@@ -188,9 +193,57 @@
     }
 
     const { invoke } = window.__TAURI__.core;
+    const { listen } = window.__TAURI__.event;
+
+    function showConfigReloadBanner(message) {
+      configReloadBannerEl.style.display = 'block';
+      configReloadBannerTextEl.textContent = message;
+    }
+
+    function hideConfigReloadBanner() {
+      configReloadBannerEl.style.display = 'none';
+      configReloadBannerTextEl.textContent = '';
+    }
 
     function isAndroidBridgeAvailable() {
       return Boolean(window.AndroidBridge?.startBreakService && window.AndroidBridge?.stopBreakService);
+    }
+
+    function isAndroidPlatform() {
+      if (isAndroidBridgeAvailable()) {
+        return true;
+      }
+
+      const uaDataPlatform = navigator.userAgentData?.platform?.toLowerCase?.();
+      if (uaDataPlatform === 'android') {
+        return true;
+      }
+
+      const platform = navigator.platform?.toLowerCase?.() ?? '';
+      if (platform.includes('android')) {
+        return true;
+      }
+
+      const userAgent = navigator.userAgent?.toLowerCase?.() ?? '';
+      if (userAgent.includes('android')) {
+        return true;
+      }
+
+      return /wv|webview/i.test(userAgent) && navigator.maxTouchPoints > 0;
+    }
+
+    async function registerConfigReloadListeners() {
+      await Promise.all([
+        listen('config-reload-error', (event) => {
+          showConfigReloadBanner(event.payload?.message ?? 'Could not reload config.yaml. Using the last valid config.');
+        }),
+        listen('config-reload-success', async () => {
+          hideConfigReloadBanner();
+          const schedule = await invoke('get_break_schedule');
+          renderDisableOptions(schedule.disable_options);
+          await syncEngineStatus();
+        }),
+      ]);
     }
 
     function setAndroidAlertSetupVisible(visible, message = null) {
@@ -403,8 +456,16 @@
       throw new Error('Android bridge is unavailable. Background service only works on Android after the bridge loads.');
     }
 
+    async function loadScheduleForUi() {
+      if (isAndroidPlatform()) {
+        return invoke('reload_runtime_config');
+      }
+
+      return invoke('get_break_schedule');
+    }
+
     async function bootstrapTimer() {
-      const schedule = await invoke('get_break_schedule');
+      const schedule = await loadScheduleForUi();
       renderDisableOptions(schedule.disable_options);
       await syncAndroidAlertCapability();
       await syncActivitySignals();
@@ -428,7 +489,7 @@
           const bridge = await waitForAndroidBridge();
           ensureAndroidMainScreenChrome();
           console.log("Bridge ping:", bridge.ping?.());
-          const schedule = await invoke('get_break_schedule');
+          const schedule = await loadScheduleForUi();
           renderDisableOptions(schedule.disable_options);
           await syncAndroidAlertCapability();
           await invoke('start_break_timer');
@@ -438,7 +499,7 @@
           bridge.startBreakService();
           statusEl.textContent = 'Service started! Break timer running.';
         } else {
-          const schedule = await invoke('get_break_schedule');
+          const schedule = await loadScheduleForUi();
           renderDisableOptions(schedule.disable_options);
           await syncAndroidAlertCapability();
           await invoke('start_break_timer');
@@ -536,7 +597,12 @@
       }
     });
 
-    bootstrapTimer().catch((error) => {
+    async function initializeApp() {
+      await registerConfigReloadListeners();
+      await bootstrapTimer();
+    }
+
+    initializeApp().catch((error) => {
       console.error('Failed to bootstrap timer:', error);
       statusEl.textContent = `Error: ${error}`;
       statusEl.style.color = 'red';

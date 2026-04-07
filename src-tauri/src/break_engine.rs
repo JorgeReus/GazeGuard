@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,8 +118,17 @@ struct RawConfigMeta {
 
 impl BreakEngineConfig {
     pub fn load() -> Self {
-        Self::from_yaml(include_str!("../gen/android/app/src/main/assets/config/defaults.yaml"))
-            .expect("defaults config should be valid YAML")
+        Self::load_from_embedded_defaults().expect("defaults config should be valid YAML")
+    }
+
+    pub fn load_from_embedded_defaults() -> Result<Self, serde_yaml::Error> {
+        Self::from_yaml(include_str!("../config/defaults.yaml"))
+    }
+
+    pub fn load_or_create_from_path(path: &Path, default_yaml: &str) -> Result<Self, String> {
+        let path = crate::config_file::ensure_config_file(path, default_yaml)?;
+        let yaml = fs::read_to_string(path).map_err(|error| error.to_string())?;
+        Self::from_yaml(&yaml).map_err(|error| error.to_string())
     }
 
     fn from_yaml(yaml: &str) -> Result<Self, serde_yaml::Error> {
@@ -299,6 +310,11 @@ impl BreakEngine {
         self.status()
     }
 
+    #[cfg(test)]
+    pub fn tick(&mut self, seconds: u64) {
+        self.advance_by_seconds(seconds);
+    }
+
     pub fn status(&mut self) -> EngineStatus {
         self.sync_with_clock();
         self.reconcile();
@@ -353,6 +369,12 @@ impl BreakEngine {
 
     pub fn config(&self) -> &BreakEngineConfig {
         &self.config
+    }
+
+    pub fn apply_config(&mut self, config: BreakEngineConfig) {
+        self.sync_with_clock();
+        self.config = config;
+        self.reconcile_phase_after_config_change();
     }
 
     pub fn snapshot(&mut self, saved_at_unix_seconds: u64) -> BreakEngineSnapshot {
@@ -720,6 +742,32 @@ impl BreakEngine {
         }
     }
 
+    fn reconcile_phase_after_config_change(&mut self) {
+        self.normalize_snapshot_template_orders();
+        self.normalize_snapshot_cycle_counter();
+
+        if matches!(self.phase, EnginePhase::Stopped) {
+            return;
+        }
+
+        self.work_remaining = self
+            .work_remaining
+            .min(self.config.break_interval.saturating_mul(60));
+        self.warning_remaining = self
+            .warning_remaining
+            .min(self.config.pre_break_warning_time);
+
+        if let Some(current_break) = self.current_break.as_mut() {
+            let replacement_duration = match current_break.kind {
+                BreakKind::Short => self.config.short_break_duration,
+                BreakKind::Long => self.config.long_break_duration,
+            };
+            current_break.duration_seconds = replacement_duration;
+            current_break.mandatory = self.config.strict_break;
+            self.break_remaining = self.break_remaining.min(replacement_duration);
+        }
+    }
+
     fn next_template_name(&mut self, kind: BreakKind) -> Option<String> {
         match kind {
             BreakKind::Short => {
@@ -805,9 +853,8 @@ impl BreakEngine {
         next_index: &mut usize,
         expected_len: usize,
     ) {
-        let valid = order.len() == expected_len
-            && order.iter().all(|&index| index < expected_len)
-            && {
+        let valid =
+            order.len() == expected_len && order.iter().all(|&index| index < expected_len) && {
                 let mut seen = vec![false; expected_len];
                 order.iter().all(|&index| {
                     if seen[index] {
@@ -930,6 +977,35 @@ fn postpone_seconds(duration: u64, unit: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{BreakEngine, BreakEngineConfig, BreakInfo, BreakKind, BreakTemplate, EnginePhase};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn path(&self) -> &Path {
+            self.path.as_path()
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn unique_test_dir(name: &str) -> TestDir {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("gazeguard-break-engine-{name}-{suffix}"));
+        fs::create_dir_all(&path).unwrap();
+        TestDir { path }
+    }
 
     fn restore_test_config() -> BreakEngineConfig {
         let mut config = BreakEngineConfig::load();
@@ -992,13 +1068,13 @@ mod tests {
 
     #[test]
     fn loads_yaml_defaults_shape() {
-        let config = BreakEngineConfig::load();
+        let config = BreakEngineConfig::load_from_embedded_defaults().unwrap();
 
-        assert_eq!(config.break_interval, 15);
+        assert_eq!(config.break_interval, 1);
         assert_eq!(config.pre_break_warning_time, 10);
         assert_eq!(config.short_break_duration, 15);
         assert_eq!(config.long_break_duration, 60);
-        assert_eq!(config.no_of_short_breaks_per_long_break, 4);
+        assert_eq!(config.no_of_short_breaks_per_long_break, 74);
         assert_eq!(config.idle_time, 5);
         assert!(!config.strict_break);
         assert!(config.allow_postpone);
@@ -1014,6 +1090,140 @@ mod tests {
         assert_eq!(config.disable_options[0].seconds(), 30 * 60);
         assert_eq!(config.short_breaks[0].name, "Gently close your eyes");
         assert_eq!(config.long_breaks[0].name, "Walk for a while");
+    }
+
+    #[test]
+    fn load_or_create_from_path_reads_seeded_yaml_file() {
+        let temp = unique_test_dir("seeded-config");
+        let config_path = temp.path().join("config.yaml");
+        let yaml = "short_break_interval: 7\nlong_break_interval: 75\nlong_break_duration: 60\npre_break_warning_time: 10\nshort_break_duration: 15\nstrict_break: false\n";
+
+        let config = BreakEngineConfig::load_or_create_from_path(&config_path, yaml).unwrap();
+
+        assert_eq!(config.break_interval, 7);
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), yaml);
+    }
+
+    #[test]
+    fn apply_config_updates_schedule_values_and_preserves_runtime_state() {
+        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        engine.start();
+        engine.tick(3);
+        engine.begin_break_now();
+        engine.set_idle(true);
+        engine.set_fullscreen(true);
+
+        let before = engine.snapshot(0);
+
+        let mut updated = BreakEngineConfig::load();
+        updated.break_interval = 9;
+        updated.pre_break_warning_time = 12;
+        updated.short_break_duration = 22;
+        updated.long_break_duration = 70;
+        updated.idle_time = 11;
+        updated.random_order = true;
+        updated.short_breaks = vec![BreakTemplate {
+            name: "Reload short".into(),
+        }];
+        updated.long_breaks = vec![];
+
+        engine.apply_config(updated.clone());
+
+        let after = engine.snapshot(0);
+        let status = engine.status();
+        assert_eq!(status.phase, before.phase);
+        assert_eq!(after.phase, before.phase);
+        assert_eq!(after.work_remaining, before.work_remaining);
+        assert_eq!(after.warning_remaining, before.warning_remaining);
+        assert_eq!(after.break_remaining, before.break_remaining);
+        assert_eq!(after.shorts_since_long, before.shorts_since_long);
+        assert_eq!(after.next_short_index, 0);
+        assert_eq!(after.next_long_index, 0);
+        assert_eq!(after.short_break_order, vec![0]);
+        assert!(after.long_break_order.is_empty());
+        assert_eq!(
+            after.current_break.as_ref().map(|info| info.kind),
+            before.current_break.as_ref().map(|info| info.kind)
+        );
+        assert_eq!(
+            after
+                .current_break
+                .as_ref()
+                .map(|info| info.template_name.clone()),
+            before
+                .current_break
+                .as_ref()
+                .map(|info| info.template_name.clone())
+        );
+        assert_eq!(
+            after
+                .current_break
+                .as_ref()
+                .map(|info| info.duration_seconds),
+            Some(22)
+        );
+        assert_eq!(
+            after.current_break.as_ref().map(|info| info.mandatory),
+            Some(false)
+        );
+        assert!(after.idle_active);
+        assert!(after.fullscreen);
+        assert_eq!(after.consecutive_skips, before.consecutive_skips);
+        assert_eq!(engine.config().break_interval, 9);
+        assert_eq!(engine.config().pre_break_warning_time, 12);
+        assert_eq!(engine.config().short_break_duration, 22);
+        assert_eq!(engine.config().long_break_duration, 70);
+        assert_eq!(engine.config().idle_time, 11);
+    }
+
+    #[test]
+    fn apply_config_syncs_elapsed_wall_clock_before_replacing_config() {
+        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        engine.start();
+        engine.advance_by(40);
+        engine.rewind_last_sync_by(10);
+
+        let mut updated = BreakEngineConfig::load();
+        updated.break_interval = 9;
+        updated.pre_break_warning_time = 12;
+
+        engine.apply_config(updated);
+
+        let status = engine.status();
+        assert!(matches!(status.phase, EnginePhase::Warning));
+        assert_eq!(status.seconds_remaining, Some(10));
+    }
+
+    fn reload_engine_from_path(
+        engine: &mut BreakEngine,
+        path: &Path,
+        default_yaml: &str,
+    ) -> Result<(), String> {
+        let config = BreakEngineConfig::load_or_create_from_path(path, default_yaml)?;
+        engine.apply_config(config);
+        Ok(())
+    }
+
+    #[test]
+    fn load_from_path_reports_yaml_errors_without_mutating_existing_engine() {
+        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        engine.start();
+        engine.tick(3);
+        engine.begin_break_now();
+        engine.set_idle(true);
+        engine.set_fullscreen(true);
+        let before = engine.config().clone();
+        let before_snapshot = engine.snapshot(0);
+        let temp = unique_test_dir("invalid-config");
+        let config_path = temp.path().join("config.yaml");
+        std::fs::write(&config_path, "not: [valid").unwrap();
+
+        let error = reload_engine_from_path(&mut engine, &config_path, "short_break_interval: 1\n")
+            .unwrap_err();
+
+        assert!(error.contains("unknown field `not`"));
+        assert_eq!(engine.config(), &before);
+        assert_eq!(engine.snapshot(0), before_snapshot);
     }
 
     #[test]
@@ -1127,7 +1337,10 @@ consecutive_skip_limit: 2
         let current_break = restored.current_break().expect("expected active break");
 
         assert_eq!(current_break.kind, BreakKind::Short);
-        assert_eq!(current_break.duration_seconds, second_break.duration_seconds);
+        assert_eq!(
+            current_break.duration_seconds,
+            second_break.duration_seconds
+        );
         assert_eq!(current_break.template_name, None);
         assert_eq!(
             restored.status().seconds_remaining,
@@ -1147,9 +1360,7 @@ consecutive_skip_limit: 2
     fn restored_running_engine_keeps_advancing_after_import() {
         let mut config = BreakEngineConfig::load();
         config.random_order = false;
-        config.short_breaks = vec![super::BreakTemplate {
-            name: "A".into(),
-        }];
+        config.short_breaks = vec![super::BreakTemplate { name: "A".into() }];
         config.no_of_short_breaks_per_long_break = 99;
 
         let mut engine = BreakEngine::new(config.clone());
@@ -1188,7 +1399,10 @@ consecutive_skip_limit: 2
 
         assert!(matches!(status.phase, EnginePhase::OnBreak));
         assert_eq!(status.seconds_remaining, Some(8));
-        assert_eq!(status.current_break.as_ref().map(|info| &info.kind), Some(&BreakKind::Short));
+        assert_eq!(
+            status.current_break.as_ref().map(|info| &info.kind),
+            Some(&BreakKind::Short)
+        );
     }
 
     #[test]
@@ -1273,9 +1487,7 @@ consecutive_skip_limit: 2
     fn malformed_started_snapshot_with_zero_second_break_is_normalized() {
         let mut config = BreakEngineConfig::load();
         config.random_order = false;
-        config.short_breaks = vec![super::BreakTemplate {
-            name: "A".into(),
-        }];
+        config.short_breaks = vec![super::BreakTemplate { name: "A".into() }];
         let expected_work_remaining = config.break_interval * 60;
 
         let snapshot = super::BreakEngineSnapshot {
@@ -1306,7 +1518,10 @@ consecutive_skip_limit: 2
         let mut restored = BreakEngine::from_snapshot(config, snapshot);
 
         assert!(matches!(restored.status().phase, EnginePhase::Running));
-        assert_eq!(restored.status().seconds_remaining, Some(expected_work_remaining));
+        assert_eq!(
+            restored.status().seconds_remaining,
+            Some(expected_work_remaining)
+        );
         assert!(restored.current_break().is_none());
         assert_eq!(restored.break_remaining, 0);
     }
@@ -1344,7 +1559,10 @@ consecutive_skip_limit: 2
         let mut restored = BreakEngine::from_snapshot(config, snapshot);
 
         assert!(matches!(restored.status().phase, EnginePhase::Running));
-        assert_eq!(restored.status().seconds_remaining, Some(expected_work_remaining));
+        assert_eq!(
+            restored.status().seconds_remaining,
+            Some(expected_work_remaining)
+        );
         assert!(restored.current_break().is_none());
         assert_eq!(restored.break_remaining, 0);
         assert_eq!(restored.disabled_remaining, 0);
@@ -1532,7 +1750,10 @@ consecutive_skip_limit: 2
         let mut restored = BreakEngine::from_snapshot(config, snapshot);
 
         assert!(matches!(restored.status().phase, EnginePhase::Running));
-        assert_eq!(restored.status().seconds_remaining, Some(expected_work_remaining));
+        assert_eq!(
+            restored.status().seconds_remaining,
+            Some(expected_work_remaining)
+        );
         assert!(restored.current_break().is_none());
     }
 
@@ -1579,12 +1800,8 @@ consecutive_skip_limit: 2
         let mut config = BreakEngineConfig::load();
         config.short_break_duration = 30;
         config.long_break_duration = 30;
-        config.short_breaks = vec![super::BreakTemplate {
-            name: "A".into(),
-        }];
-        config.long_breaks = vec![super::BreakTemplate {
-            name: "L".into(),
-        }];
+        config.short_breaks = vec![super::BreakTemplate { name: "A".into() }];
+        config.long_breaks = vec![super::BreakTemplate { name: "L".into() }];
 
         let snapshot = super::BreakEngineSnapshot {
             was_started: true,
@@ -1653,27 +1870,26 @@ consecutive_skip_limit: 2
         let mut restored = BreakEngine::from_snapshot(config.clone(), snapshot);
 
         assert!(matches!(restored.status().phase, EnginePhase::Stopped));
-        assert_eq!(
-            restored.current_break().is_none(),
-            true
-        );
+        assert_eq!(restored.current_break().is_none(), true);
         assert_eq!(restored.shorts_since_long, 0);
         assert_eq!(restored.next_short_index, 0);
         assert_eq!(restored.next_long_index, 0);
-        assert_eq!(restored.short_break_order, (0..config.short_breaks.len()).collect::<Vec<_>>());
-        assert_eq!(restored.long_break_order, (0..config.long_breaks.len()).collect::<Vec<_>>());
+        assert_eq!(
+            restored.short_break_order,
+            (0..config.short_breaks.len()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            restored.long_break_order,
+            (0..config.long_breaks.len()).collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn malformed_shorts_since_long_is_clamped_on_import() {
         let mut config = BreakEngineConfig::load();
         config.random_order = false;
-        config.short_breaks = vec![super::BreakTemplate {
-            name: "A".into(),
-        }];
-        config.long_breaks = vec![super::BreakTemplate {
-            name: "L".into(),
-        }];
+        config.short_breaks = vec![super::BreakTemplate { name: "A".into() }];
+        config.long_breaks = vec![super::BreakTemplate { name: "L".into() }];
         config.no_of_short_breaks_per_long_break = 2;
 
         let snapshot = super::BreakEngineSnapshot {
@@ -1730,7 +1946,10 @@ consecutive_skip_limit: 2
         let mut restored = BreakEngine::from_snapshot(config.clone(), on_break_snapshot);
 
         assert!(matches!(restored.status().phase, EnginePhase::Running));
-        assert_eq!(restored.status().seconds_remaining, Some(expected_work_remaining));
+        assert_eq!(
+            restored.status().seconds_remaining,
+            Some(expected_work_remaining)
+        );
         assert!(restored.current_break().is_none());
         assert_eq!(restored.break_remaining, 0);
         assert_eq!(restored.disabled_remaining, 0);
@@ -1760,7 +1979,10 @@ consecutive_skip_limit: 2
         let mut restored = BreakEngine::from_snapshot(config, disabled_snapshot);
 
         assert!(matches!(restored.status().phase, EnginePhase::Running));
-        assert_eq!(restored.status().seconds_remaining, Some(expected_work_remaining));
+        assert_eq!(
+            restored.status().seconds_remaining,
+            Some(expected_work_remaining)
+        );
         assert!(restored.current_break().is_none());
         assert_eq!(restored.disabled_remaining, 0);
     }
@@ -1826,10 +2048,22 @@ consecutive_skip_limit: 2
         engine.complete_break().unwrap();
         let fifth = engine.debug_force_break();
 
-        assert_eq!(first.template_name.as_deref(), Some("Gently close your eyes"));
-        assert_eq!(second.template_name.as_deref(), Some("Roll your eyes a few times to each side"));
-        assert_eq!(third.template_name.as_deref(), Some("Rotate your eyes in clockwise direction"));
-        assert_eq!(fourth.template_name.as_deref(), Some("Rotate your eyes in counterclockwise direction"));
+        assert_eq!(
+            first.template_name.as_deref(),
+            Some("Gently close your eyes")
+        );
+        assert_eq!(
+            second.template_name.as_deref(),
+            Some("Roll your eyes a few times to each side")
+        );
+        assert_eq!(
+            third.template_name.as_deref(),
+            Some("Rotate your eyes in clockwise direction")
+        );
+        assert_eq!(
+            fourth.template_name.as_deref(),
+            Some("Rotate your eyes in counterclockwise direction")
+        );
         assert_eq!(fifth.template_name.as_deref(), Some("Walk for a while"));
         assert!(matches!(fifth.kind, BreakKind::Long));
     }

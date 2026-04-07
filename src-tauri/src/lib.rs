@@ -1,21 +1,31 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod break_engine;
+mod config_file;
+mod config_reload;
 mod desktop_signals;
 
+use break_engine::{
+    BreakEngine, BreakEngineConfig, BreakEngineSnapshot, BreakInfo, DisableOption, EnginePhase,
+    EngineStatus, PostponeOption,
+};
 use serde::Serialize;
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
-use std::sync::{Arc, Mutex, OnceLock};
-use break_engine::{BreakEngine, BreakEngineConfig, BreakEngineSnapshot, BreakInfo, DisableOption, EnginePhase, EngineStatus, PostponeOption};
+#[cfg(desktop)]
+use tauri::Emitter;
 use tauri::Manager;
 use tauri::State;
 
 #[cfg(desktop)]
-use tauri::{menu::{Menu, MenuItem}, tray::TrayIconBuilder};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+};
 
 type SharedBreakEngine = Arc<Mutex<BreakEngine>>;
 
@@ -121,10 +131,12 @@ fn postpone_break_for_android(seconds: u64) -> String {
     engine
         .lock()
         .ok()
-        .map(|mut guard| match guard.postpone_break_with_override(Some(seconds)) {
-            Ok(status) => engine_phase_label(&status.phase).to_string(),
-            Err(error) => error,
-        })
+        .map(
+            |mut guard| match guard.postpone_break_with_override(Some(seconds)) {
+                Ok(status) => engine_phase_label(&status.phase).to_string(),
+                Err(error) => error,
+            },
+        )
         .unwrap_or_else(|| "poisoned".to_string())
 }
 
@@ -160,10 +172,16 @@ fn break_overlay_snapshot_for_android() -> String {
                         .current_break
                         .as_ref()
                         .map(|info| {
-                            info.template_name.clone().unwrap_or_else(|| match info.kind {
-                                break_engine::BreakKind::Long => "Take a Long Break".to_string(),
-                                break_engine::BreakKind::Short => "Take a Short Break".to_string(),
-                            })
+                            info.template_name
+                                .clone()
+                                .unwrap_or_else(|| match info.kind {
+                                    break_engine::BreakKind::Long => {
+                                        "Take a Long Break".to_string()
+                                    }
+                                    break_engine::BreakKind::Short => {
+                                        "Take a Short Break".to_string()
+                                    }
+                                })
                         })
                         .unwrap_or_else(|| "Take a Break".to_string()),
                     true,
@@ -229,9 +247,66 @@ fn singleton_test_lock() -> &'static Mutex<()> {
 }
 
 fn create_break_engine() -> SharedBreakEngine {
-    let engine = create_break_engine_with_config(BreakEngineConfig::load(), None, unix_now_seconds());
+    let engine =
+        create_break_engine_with_config(BreakEngineConfig::load(), None, unix_now_seconds());
     register_shared_break_engine(engine.clone());
     engine
+}
+
+fn runtime_config_path(app_data_dir: &Path) -> Result<PathBuf, String> {
+    #[cfg(desktop)]
+    let _ = app_data_dir;
+
+    #[cfg(desktop)]
+    {
+        crate::config_file::desktop_config_path()
+    }
+
+    #[cfg(not(desktop))]
+    {
+        Ok(app_data_dir
+            .join("config")
+            .join(crate::config_file::CONFIG_FILE_NAME))
+    }
+}
+
+fn load_runtime_break_engine_config(app_data_dir: &Path) -> Result<BreakEngineConfig, String> {
+    let config_path = runtime_config_path(app_data_dir)?;
+    BreakEngineConfig::load_or_create_from_path(
+        &config_path,
+        include_str!("../config/defaults.yaml"),
+    )
+}
+
+fn reload_runtime_config_into_engine(
+    engine: &SharedBreakEngine,
+    config_path: &Path,
+) -> Result<BreakSchedule, String> {
+    let config = BreakEngineConfig::load_or_create_from_path(
+        config_path,
+        include_str!("../config/defaults.yaml"),
+    )?;
+
+    let schedule = BreakSchedule {
+        break_interval_minutes: config.break_interval,
+        pre_break_warning_seconds: config.pre_break_warning_time,
+        disable_options: config.disable_options.clone(),
+        postpone_options: config.postpone_options.clone(),
+    };
+
+    let mut guard = engine
+        .lock()
+        .map_err(|_| "State lock poisoned".to_string())?;
+    guard.apply_config(config);
+    Ok(schedule)
+}
+
+#[cfg(test)]
+fn reload_runtime_config_for_tests(engine: SharedBreakEngine) -> Result<BreakSchedule, String> {
+    let app_data_dir =
+        get_snapshot_app_data_dir().ok_or_else(|| "App data dir unavailable".to_string())?;
+    let path = runtime_config_path(app_data_dir.as_path())?;
+    reload_runtime_config_into_engine(&engine, &path)
 }
 
 fn snapshot_path(app_data_dir: &Path) -> PathBuf {
@@ -315,7 +390,9 @@ fn save_engine_snapshot(
     now_unix_seconds: u64,
 ) -> Result<(), String> {
     let snapshot = {
-        let mut guard = engine.lock().map_err(|_| "State lock poisoned".to_string())?;
+        let mut guard = engine
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
         if !guard.config().persist_state {
             let snapshot_file = snapshot_path(app_data_dir);
             match fs::remove_file(snapshot_file) {
@@ -392,8 +469,7 @@ fn refresh_tray_title(app: &tauri::AppHandle) {
 }
 
 #[cfg(not(desktop))]
-fn refresh_tray_title(_app: &tauri::AppHandle) {
-}
+fn refresh_tray_title(_app: &tauri::AppHandle) {}
 
 #[cfg(desktop)]
 fn spawn_tray_updater(app: tauri::AppHandle) {
@@ -404,7 +480,87 @@ fn spawn_tray_updater(app: tauri::AppHandle) {
 }
 
 #[cfg(not(desktop))]
-fn spawn_tray_updater(_app: tauri::AppHandle) {
+fn spawn_tray_updater(_app: tauri::AppHandle) {}
+
+#[cfg(desktop)]
+fn spawn_config_watcher(
+    app: tauri::AppHandle,
+    engine: SharedBreakEngine,
+    config_path: PathBuf,
+    state: crate::config_reload::ConfigReloadState,
+) {
+    thread::spawn(move || {
+        let mut last_seen = crate::config_reload::file_mtime(&config_path)
+            .ok()
+            .flatten();
+        let mut last_emitted_error = None;
+
+        loop {
+            thread::sleep(Duration::from_millis(750));
+
+            let current = match crate::config_reload::file_mtime(&config_path) {
+                Ok(value) => value,
+                Err(error) => {
+                    if crate::config_reload::should_emit_error(&mut last_emitted_error, &error) {
+                        let _ = app.emit("config-reload-error", json!({ "message": error }));
+                    }
+                    continue;
+                }
+            };
+
+            if !crate::config_reload::should_reload(last_seen, current) {
+                crate::config_reload::clear_emitted_error(&mut last_emitted_error);
+                continue;
+            }
+
+            let result = BreakEngineConfig::load_or_create_from_path(
+                &config_path,
+                include_str!("../config/defaults.yaml"),
+            );
+            let reload = state.finish_reload(result);
+            last_seen = crate::config_reload::refreshed_tracked_mtime(&config_path, current);
+
+            match reload.outcome {
+                crate::config_reload::ConfigReloadOutcome::Reloaded => {
+                    match apply_reloaded_config(&engine, state.last_good_config()) {
+                        Ok(()) => {
+                            last_emitted_error = None;
+                            let _ = app.emit("config-reload-success", json!({}));
+                        }
+                        Err(message) => {
+                            if crate::config_reload::should_emit_error(
+                                &mut last_emitted_error,
+                                &message,
+                            ) {
+                                let _ =
+                                    app.emit("config-reload-error", json!({ "message": message }));
+                            }
+                        }
+                    }
+                }
+                crate::config_reload::ConfigReloadOutcome::Failed => {
+                    let message = reload.message.unwrap_or_else(|| {
+                        "Could not reload config.yaml. Using the last valid config.".to_string()
+                    });
+                    if crate::config_reload::should_emit_error(&mut last_emitted_error, &message) {
+                        let _ = app.emit("config-reload-error", json!({ "message": message }));
+                    }
+                }
+                crate::config_reload::ConfigReloadOutcome::Unchanged => {}
+            }
+        }
+    });
+}
+
+fn apply_reloaded_config(
+    engine: &SharedBreakEngine,
+    config: BreakEngineConfig,
+) -> Result<(), String> {
+    let mut guard = engine
+        .lock()
+        .map_err(|_| "State lock poisoned".to_string())?;
+    guard.apply_config(config);
+    Ok(())
 }
 
 #[tauri::command]
@@ -438,6 +594,15 @@ fn get_break_schedule(state: State<'_, SharedBreakEngine>) -> Result<BreakSchedu
         disable_options: config.disable_options.clone(),
         postpone_options: config.postpone_options.clone(),
     })
+}
+
+#[tauri::command]
+fn reload_runtime_config(state: State<'_, SharedBreakEngine>) -> Result<BreakSchedule, String> {
+    let app_data_dir =
+        get_snapshot_app_data_dir().ok_or_else(|| "App data dir unavailable".to_string())?;
+    let path = runtime_config_path(app_data_dir.as_path())?;
+    let engine = state.inner().clone();
+    reload_runtime_config_into_engine(&engine, &path)
 }
 
 #[tauri::command]
@@ -495,8 +660,10 @@ fn sync_desktop_window_state(
     let _ = &app;
 
     #[cfg(desktop)]
-    let signals =
-        crate::desktop_signals::collect_desktop_signals(&app, guard.config().idle_time.saturating_mul(60));
+    let signals = crate::desktop_signals::collect_desktop_signals(
+        &app,
+        guard.config().idle_time.saturating_mul(60),
+    );
 
     #[cfg(not(desktop))]
     let signals = crate::desktop_signals::DesktopSignals {
@@ -523,10 +690,7 @@ fn disable_reminders(
 }
 
 #[tauri::command]
-fn skip_break(
-    app: tauri::AppHandle,
-    state: State<'_, SharedBreakEngine>,
-) -> Result<(), String> {
+fn skip_break(app: tauri::AppHandle, state: State<'_, SharedBreakEngine>) -> Result<(), String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
     let skip_result = guard.skip_break();
     drop(guard);
@@ -710,7 +874,8 @@ fn open_break_window(app: tauri::AppHandle) -> Result<(), String> {
     {
         // On mobile, navigate the main window to the break page
         if let Some(main_window) = app.get_webview_window("main") {
-            main_window.eval("window.location.href = 'break.html';")
+            main_window
+                .eval("window.location.href = 'break.html';")
                 .map_err(|e| e.to_string())?;
         }
     }
@@ -731,7 +896,8 @@ fn close_break_window(app: tauri::AppHandle) -> Result<(), String> {
     {
         // On mobile, navigate back to the main page
         if let Some(main_window) = app.get_webview_window("main") {
-            main_window.eval("window.location.href = 'index.html';")
+            main_window
+                .eval("window.location.href = 'index.html';")
                 .map_err(|e| e.to_string())?;
         }
     }
@@ -741,8 +907,7 @@ fn close_break_window(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init());
+    let builder = tauri::Builder::default().plugin(tauri_plugin_shell::init());
 
     // Add android plugin
     // #[cfg(target_os = "android")]
@@ -754,21 +919,36 @@ pub fn run() {
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             register_snapshot_app_data_dir(app_data_dir.clone());
+            let initial_config =
+                load_runtime_break_engine_config(app_data_dir.as_path()).map_err(|error| {
+                    tauri::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, error))
+                })?;
             let engine = create_break_engine_with_config(
-                BreakEngineConfig::load(),
+                initial_config.clone(),
                 Some(app_data_dir.as_path()),
                 unix_now_seconds(),
             );
             let _ = app.manage(engine.clone());
-            register_shared_break_engine(engine);
+            register_shared_break_engine(engine.clone());
 
             #[cfg(not(desktop))]
             let _ = &app;
 
             #[cfg(desktop)]
             {
+                let config_path = runtime_config_path(app_data_dir.as_path()).map_err(|error| {
+                    tauri::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, error))
+                })?;
+                spawn_config_watcher(
+                    app.handle().clone(),
+                    engine.clone(),
+                    config_path,
+                    crate::config_reload::ConfigReloadState::new(initial_config),
+                );
+
                 // Create tray menu
-                let test_break = MenuItem::with_id(app, "test_break", "Test Break", true, None::<&str>)?;
+                let test_break =
+                    MenuItem::with_id(app, "test_break", "Test Break", true, None::<&str>)?;
                 let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
                 let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
@@ -831,6 +1011,7 @@ pub fn run() {
             stop_break_timer,
             get_engine_status,
             get_break_schedule,
+            reload_runtime_config,
             get_current_break_info,
             set_idle_active,
             set_fullscreen_active,
@@ -855,13 +1036,18 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_desktop_signals_to_engine, break_overlay_snapshot_for_android, create_break_engine,
-        create_break_engine_for_tests, debug_engine_phase_for_android, force_break_now_for_android,
-        save_engine_snapshot, save_registered_engine_snapshot, singleton_test_lock,
-        SharedBreakEngine, SNAPSHOT_FILE_NAME, format_tray_title, set_shared_break_engine_for_tests,
-        set_snapshot_app_data_dir_for_tests,
+        apply_desktop_signals_to_engine, apply_reloaded_config, break_overlay_snapshot_for_android,
+        create_break_engine, create_break_engine_for_tests, debug_engine_phase_for_android,
+        force_break_now_for_android, format_tray_title, reload_runtime_config_for_tests,
+        save_engine_snapshot, save_registered_engine_snapshot, set_shared_break_engine_for_tests,
+        set_snapshot_app_data_dir_for_tests, singleton_test_lock, SharedBreakEngine,
+        SNAPSHOT_FILE_NAME,
     };
-    use crate::break_engine::{BreakEngine, BreakEngineConfig, BreakKind, EnginePhase, EngineStatus};
+    use crate::break_engine::{
+        BreakEngine, BreakEngineConfig, BreakKind, EnginePhase, EngineStatus,
+    };
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    use std::ffi::OsString;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex, MutexGuard};
@@ -899,6 +1085,34 @@ mod tests {
     struct SingletonTestContext {
         _shared_engine: SharedEngineTestGuard,
         _lock: MutexGuard<'static, ()>,
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    struct HomeEnvGuard {
+        previous_home: Option<OsString>,
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    impl HomeEnvGuard {
+        fn swap(path: &std::path::Path) -> Self {
+            let previous_home = std::env::var_os("HOME");
+            unsafe {
+                std::env::set_var("HOME", path);
+            }
+            Self { previous_home }
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    impl Drop for HomeEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.previous_home.as_ref() {
+                    Some(home) => std::env::set_var("HOME", home),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
     }
 
     fn test_config(persist_state: bool) -> BreakEngineConfig {
@@ -1128,12 +1342,28 @@ mod tests {
         save_engine_snapshot(&disabled_engine, app_data_dir.path(), saved_at + 5).unwrap();
         assert!(!snapshot_file.exists());
 
-        let restored = create_break_engine_for_tests(test_config(true), app_data_dir.path(), saved_at + 10);
+        let restored =
+            create_break_engine_for_tests(test_config(true), app_data_dir.path(), saved_at + 10);
         let mut guard = restored.lock().unwrap();
         let status = guard.status();
 
         assert!(matches!(status.phase, EnginePhase::Running));
         assert_eq!(status.seconds_remaining, Some(120));
+    }
+
+    #[test]
+    fn apply_reloaded_config_returns_error_when_engine_lock_is_poisoned() {
+        let engine = Arc::new(Mutex::new(BreakEngine::new(BreakEngineConfig::load())));
+        let poisoned = engine.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoned.lock().unwrap();
+            panic!("poison engine lock");
+        })
+        .join();
+
+        let result = apply_reloaded_config(&engine, BreakEngineConfig::load());
+
+        assert_eq!(result, Err("State lock poisoned".to_string()));
     }
 
     #[test]
@@ -1177,11 +1407,44 @@ mod tests {
         }
         save_registered_engine_snapshot(saved_at + 10).unwrap();
 
-        let restored = create_break_engine_for_tests(test_config(true), app_data_dir.path(), saved_at + 10);
+        let restored =
+            create_break_engine_for_tests(test_config(true), app_data_dir.path(), saved_at + 10);
         let mut guard = restored.lock().unwrap();
         let status = guard.status();
 
         assert!(matches!(status.phase, EnginePhase::Running));
         assert_eq!(status.seconds_remaining, Some(80));
+    }
+
+    #[test]
+    fn reload_runtime_config_command_updates_registered_engine() {
+        let temp = unique_test_dir("reload-runtime-config");
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let _home_guard = HomeEnvGuard::swap(temp.path());
+
+        #[cfg(desktop)]
+        let config_path = crate::config_file::desktop_config_path_from_home(temp.path());
+        #[cfg(not(desktop))]
+        let config_path = temp
+            .path()
+            .join("config")
+            .join(crate::config_file::CONFIG_FILE_NAME);
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(
+            &config_path,
+            "short_break_interval: 15\nlong_break_interval: 75\nlong_break_duration: 60\npre_break_warning_time: 10\nshort_break_duration: 15\nstrict_break: false\n",
+        )
+        .unwrap();
+
+        let engine = Arc::new(Mutex::new(BreakEngine::new(BreakEngineConfig::load())));
+        set_shared_break_engine_for_tests(Some(engine.clone()));
+        set_snapshot_app_data_dir_for_tests(Some(temp.path().to_path_buf()));
+
+        let result = reload_runtime_config_for_tests(engine.clone()).unwrap();
+
+        assert_eq!(result.break_interval_minutes, 15);
+        let guard = engine.lock().unwrap();
+        assert_eq!(guard.config().break_interval, 15);
+        assert_eq!(guard.config().pre_break_warning_time, 10);
     }
 }
