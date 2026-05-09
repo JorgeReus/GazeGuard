@@ -1242,6 +1242,7 @@ mod tests {
         assert!(snapshot.contains("\"remaining_seconds\":15"));
         assert!(snapshot.contains("\"can_postpone\":true"));
         assert!(snapshot.contains("\"postpone_options\":["));
+        assert!(snapshot.contains("\"seconds\":300"));
     }
 
     #[test]

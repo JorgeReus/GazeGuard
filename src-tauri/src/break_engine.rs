@@ -39,7 +39,7 @@ impl DisableOption {
 pub struct PostponeOption {
     pub duration: u64,
     pub unit: String,
-    #[serde(skip)]
+    #[serde(default, skip_deserializing)]
     pub seconds: u64,
 }
 
@@ -750,9 +750,6 @@ impl BreakEngine {
             return;
         }
 
-        self.work_remaining = self
-            .work_remaining
-            .min(self.config.break_interval.saturating_mul(60));
         self.warning_remaining = self
             .warning_remaining
             .min(self.config.pre_break_warning_time);
@@ -1192,6 +1189,39 @@ mod tests {
         let status = engine.status();
         assert!(matches!(status.phase, EnginePhase::Warning));
         assert_eq!(status.seconds_remaining, Some(10));
+    }
+
+    #[test]
+    fn apply_config_preserves_postponed_remaining_time_above_break_interval() {
+        let mut config = BreakEngineConfig::load();
+        config.allow_postpone = true;
+        config.postpone_options = vec![
+            super::PostponeOption {
+                duration: 5,
+                unit: "minutes".into(),
+                seconds: 5 * 60,
+            },
+            super::PostponeOption {
+                duration: 10,
+                unit: "minutes".into(),
+                seconds: 10 * 60,
+            },
+        ];
+        config.break_interval = 1;
+
+        let mut engine = BreakEngine::new(config.clone());
+        engine.start();
+        engine.begin_break_now();
+        let postponed = engine
+            .postpone_break_with_override(Some(10 * 60))
+            .expect("10-minute postpone should be accepted");
+        assert_eq!(postponed.seconds_remaining, Some(10 * 60));
+
+        engine.apply_config(config);
+
+        let status = engine.status();
+        assert!(matches!(status.phase, EnginePhase::Running));
+        assert_eq!(status.seconds_remaining, Some(10 * 60));
     }
 
     fn reload_engine_from_path(

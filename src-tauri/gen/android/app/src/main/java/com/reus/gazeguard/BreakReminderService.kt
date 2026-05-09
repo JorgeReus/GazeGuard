@@ -14,6 +14,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.Toast
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -446,8 +447,24 @@ class BreakReminderService : Service() {
                 setOnClickListener {
                     runCatching {
                         RustProbe.postponeBreak(option.seconds)
+                    }.onSuccess { result ->
+                        if (result.startsWith("running")) {
+                            Log.d(TAG, "Break postponed for ${option.seconds} seconds")
+                        } else {
+                            Log.e(TAG, "Rust postponeBreak rejected request: $result")
+                            Toast.makeText(
+                                this@BreakReminderService,
+                                result,
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
                     }.onFailure { error ->
                         Log.e(TAG, "Rust postponeBreak failed", error)
+                        Toast.makeText(
+                            this@BreakReminderService,
+                            "Failed to postpone break",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                     postponeMenu.visibility = View.GONE
                 }
