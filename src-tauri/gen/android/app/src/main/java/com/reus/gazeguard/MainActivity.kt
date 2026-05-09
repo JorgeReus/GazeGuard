@@ -186,12 +186,11 @@ class MainActivity : TauriActivity() {
         super.onResume()
         appVisible = true
         setImmersiveMode(false)
-        notifyBreakEngine(BreakEngineSignals.setIdleActiveScript(false))
+        notifyBreakEngine(BreakEngineSignals.setFullscreenActiveScript(false))
     }
 
     override fun onPause() {
         appVisible = false
-        notifyBreakEngine(BreakEngineSignals.setIdleActiveScript(true))
         super.onPause()
     }
 
@@ -227,7 +226,6 @@ class MainActivity : TauriActivity() {
     }
 
     private fun syncBreakEngineSignals() {
-        notifyBreakEngine(BreakEngineSignals.setIdleActiveScript(false))
         notifyBreakEngine(BreakEngineSignals.setFullscreenActiveScript(false))
     }
 

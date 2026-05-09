@@ -403,8 +403,8 @@
     async function syncActivitySignals() {
       try {
         if (isAndroidBridgeAvailable()) {
-          await invoke('set_idle_active', { active: document.hidden });
-          await invoke('set_fullscreen_active', { active: Boolean(document.fullscreenElement) });
+          await invoke('set_idle_active', { active: false });
+          await invoke('set_fullscreen_active', { active: false });
         } else {
           await invoke('sync_desktop_window_state');
         }
