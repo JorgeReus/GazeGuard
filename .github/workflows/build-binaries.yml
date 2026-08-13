@@ -33,7 +33,7 @@ jobs:
           - name: Install Android SDK
             run: sdkmanager "platforms;android-36" "build-tools;36.1.0" "ndk;29.0.14206865"
           - name: Install Tauri CLI
-            run: cargo install tauri-cli --version 2.10.1
+            run: cargo install tauri-cli --version 2.10.1 --locked
 
       - name: Build universal APK
         working-directory: src-tauri
@@ -58,7 +58,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version 2.10.1
+        run: cargo install tauri-cli --version 2.10.1 --locked
 
       - name: Build universal DMG
         working-directory: src-tauri
