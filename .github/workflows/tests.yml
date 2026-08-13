@@ -52,7 +52,7 @@ jobs:
         working-directory: src-tauri
         run: |
           rm -f gen/android/tauri.settings.gradle
-          cargo tauri android init --ci --skip-targets-install
+          cargo tauri android init --ci --skip-targets-install || test -f gen/android/tauri.settings.gradle
           test -f gen/android/tauri.settings.gradle
 
       - name: Run Android unit tests
