@@ -1,0 +1,85 @@
+name: Build binaries
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - parallel:
+          - uses: actions/setup-java@v4
+            with:
+              distribution: temurin
+              java-version: '21'
+              cache: gradle
+          - uses: android-actions/setup-android@v3
+          - uses: dtolnay/rust-toolchain@stable
+            with:
+              targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - parallel:
+          - name: Install Android SDK
+            run: sdkmanager "platforms;android-36" "build-tools;36.1.0" "ndk;29.0.14206865"
+          - name: Install Tauri CLI
+            run: cargo install tauri-cli --version 2.10.1
+
+      - name: Build universal APK
+        working-directory: src-tauri
+        run: cargo tauri android build --apk --target aarch64 armv7 i686 x86_64 --ci
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gazeguard-android-universal
+          path: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version 2.10.1
+
+      - name: Build universal DMG
+        working-directory: src-tauri
+        run: cargo tauri build --target universal-apple-darwin --bundles dmg --no-sign --ci
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gazeguard-macos-universal
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/gazeguard_*_universal.dmg
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [android, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*

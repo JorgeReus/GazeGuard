@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - parallel:
+          - uses: actions/setup-java@v4
+            with:
+              distribution: temurin
+              java-version: '21'
+              cache: gradle
+          - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.1.0" "ndk;29.0.14206865"
+
+      - name: Run Android unit tests
+        working-directory: src-tauri/gen/android
+        run: ./gradlew app:testUniversalDebugUnitTest
