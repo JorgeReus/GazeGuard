@@ -50,7 +50,10 @@ jobs:
 
       - name: Generate Tauri Android files
         working-directory: src-tauri
-        run: cargo tauri android init --ci --skip-targets-install
+        run: |
+          rm -f gen/android/tauri.settings.gradle
+          cargo tauri android init --ci --skip-targets-install
+          test -f gen/android/tauri.settings.gradle
 
       - name: Run Android unit tests
         working-directory: src-tauri/gen/android
