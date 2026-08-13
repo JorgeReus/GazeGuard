@@ -39,7 +39,7 @@ class BreakEngineConfigTest {
             File("../../../config/defaults.yaml").readText(),
         )
 
-        assertEquals(1 * 60 * 1000L, schedule.breakIntervalMillis)
+        assertEquals(15 * 60 * 1000L, schedule.breakIntervalMillis)
         assertEquals(10 * 1000L, schedule.preBreakWarningMillis)
     }
 

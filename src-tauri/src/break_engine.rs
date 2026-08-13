@@ -1,3 +1,4 @@
+use crate::logger::LogLevel;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -70,6 +71,7 @@ pub struct BreakEngineConfig {
     pub strict_break: bool,
     pub consecutive_skip_limit: u8,
     pub idle_time: u64,
+    pub log_level: LogLevel,
     pub short_breaks: Vec<BreakTemplate>,
     pub long_breaks: Vec<BreakTemplate>,
     pub disable_options: Vec<DisableOption>,
@@ -80,6 +82,8 @@ pub struct BreakEngineConfig {
 struct RawBreakEngineConfig {
     #[serde(default)]
     meta: Option<RawConfigMeta>,
+    #[serde(default)]
+    log_level: Option<String>,
     #[serde(default)]
     random_order: bool,
     #[serde(default)]
@@ -167,6 +171,7 @@ impl BreakEngineConfig {
             strict_break: raw.strict_break,
             consecutive_skip_limit: raw.consecutive_skip_limit,
             idle_time: raw.idle_time,
+            log_level: LogLevel::parse(raw.log_level.as_deref()),
             short_breaks: raw.short_breaks,
             long_breaks: raw.long_breaks,
             disable_options: raw.disable_options,
@@ -1067,12 +1072,13 @@ mod tests {
     fn loads_yaml_defaults_shape() {
         let config = BreakEngineConfig::load_from_embedded_defaults().unwrap();
 
-        assert_eq!(config.break_interval, 1);
+        assert_eq!(config.break_interval, 15);
         assert_eq!(config.pre_break_warning_time, 10);
         assert_eq!(config.short_break_duration, 15);
         assert_eq!(config.long_break_duration, 60);
-        assert_eq!(config.no_of_short_breaks_per_long_break, 74);
+        assert_eq!(config.no_of_short_breaks_per_long_break, 4);
         assert_eq!(config.idle_time, 5);
+        assert_eq!(config.log_level, crate::logger::LogLevel::Off);
         assert!(!config.strict_break);
         assert!(config.allow_postpone);
         assert_eq!(config.postpone_duration_seconds, 5 * 60);
@@ -1175,7 +1181,9 @@ mod tests {
 
     #[test]
     fn apply_config_syncs_elapsed_wall_clock_before_replacing_config() {
-        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        let mut config = BreakEngineConfig::load();
+        config.break_interval = 1;
+        let mut engine = BreakEngine::new(config);
         engine.start();
         engine.advance_by(40);
         engine.rewind_last_sync_by(10);
@@ -1303,6 +1311,56 @@ long_breaks:
         let config = BreakEngineConfig::from_yaml(yaml).unwrap();
 
         assert!(config.persist_state);
+    }
+
+    #[test]
+    fn config_defaults_log_level_to_off() {
+        let yaml = r#"
+short_break_interval: 15
+long_break_interval: 75
+long_break_duration: 60
+pre_break_warning_time: 10
+short_break_duration: 15
+strict_break: false
+"#;
+
+        let config = BreakEngineConfig::from_yaml(yaml).unwrap();
+
+        assert_eq!(config.log_level, crate::logger::LogLevel::Off);
+    }
+
+    #[test]
+    fn config_parses_log_level_when_present() {
+        let yaml = r#"
+log_level: debug
+short_break_interval: 15
+long_break_interval: 75
+long_break_duration: 60
+pre_break_warning_time: 10
+short_break_duration: 15
+strict_break: false
+"#;
+
+        let config = BreakEngineConfig::from_yaml(yaml).unwrap();
+
+        assert_eq!(config.log_level, crate::logger::LogLevel::Debug);
+    }
+
+    #[test]
+    fn config_invalid_log_level_falls_back_to_off() {
+        let yaml = r#"
+log_level: noisy
+short_break_interval: 15
+long_break_interval: 75
+long_break_duration: 60
+pre_break_warning_time: 10
+short_break_duration: 15
+strict_break: false
+"#;
+
+        let config = BreakEngineConfig::from_yaml(yaml).unwrap();
+
+        assert_eq!(config.log_level, crate::logger::LogLevel::Off);
     }
 
     #[test]

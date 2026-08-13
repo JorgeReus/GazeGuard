@@ -4,6 +4,7 @@ mod break_engine;
 mod config_file;
 mod config_reload;
 mod desktop_signals;
+mod logger;
 
 use break_engine::{
     BreakEngine, BreakEngineConfig, BreakEngineSnapshot, BreakInfo, DisableOption, EnginePhase,
@@ -655,14 +656,25 @@ fn sync_desktop_window_state(
     state: State<'_, SharedBreakEngine>,
 ) -> Result<EngineStatus, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
+    let idle_threshold_seconds = guard.config().idle_time.saturating_mul(60);
+    let configured_log_level = guard.config().log_level;
 
     #[cfg(not(desktop))]
     let _ = &app;
 
     #[cfg(desktop)]
-    let signals = crate::desktop_signals::collect_desktop_signals(
+    crate::logger::log(
+        crate::logger::LogLevel::Debug,
+        configured_log_level,
+        "desktop_signals",
+        format_args!("configured_idle_threshold_seconds={idle_threshold_seconds}"),
+    );
+
+    #[cfg(desktop)]
+    let signals = crate::desktop_signals::collect_desktop_signals_with_level(
         &app,
-        guard.config().idle_time.saturating_mul(60),
+        idle_threshold_seconds,
+        configured_log_level,
     );
 
     #[cfg(not(desktop))]
@@ -671,7 +683,30 @@ fn sync_desktop_window_state(
         idle_active: false,
     };
 
+    #[cfg(desktop)]
+    crate::logger::log(
+        crate::logger::LogLevel::Debug,
+        configured_log_level,
+        "desktop_signals",
+        format_args!("collected_desktop_signals={signals:?}"),
+    );
+
     let status = apply_desktop_signals_to_engine(&mut guard, signals);
+
+    #[cfg(desktop)]
+    {
+        let engine_snapshot = guard.snapshot(unix_now_seconds());
+        crate::logger::log(
+            crate::logger::LogLevel::Debug,
+            configured_log_level,
+            "desktop_signals",
+            format_args!(
+                "applied_engine_state idle_active={} fullscreen_active={} phase={:?}",
+                engine_snapshot.idle_active, engine_snapshot.fullscreen, status.phase
+            ),
+        );
+    }
+
     drop(guard);
     let _ = save_registered_engine_snapshot(unix_now_seconds());
     Ok(status)

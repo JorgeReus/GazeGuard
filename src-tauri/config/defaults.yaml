@@ -1,5 +1,6 @@
 meta:
   config_version: "6.0.4"
+log_level: off
 random_order: true
 allow_postpone: true
 short_break_interval: 15

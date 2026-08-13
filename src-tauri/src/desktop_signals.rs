@@ -1,3 +1,6 @@
+use std::fmt::Arguments;
+
+use crate::logger::{self, LogLevel};
 use tauri::Manager;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +25,12 @@ struct ScreenRect {
     bottom: i32,
 }
 
+const DESKTOP_SIGNALS_LOG_TARGET: &str = "desktop_signals";
+
+fn log_desktop_signals(level: LogLevel, configured_level: LogLevel, args: Arguments<'_>) {
+    logger::log(level, configured_level, DESKTOP_SIGNALS_LOG_TARGET, args);
+}
+
 pub fn fallback_from_window_state(window: WindowStateSnapshot) -> DesktopSignals {
     DesktopSignals {
         fullscreen_active: window.fullscreen,
@@ -43,24 +52,61 @@ fn desktop_signals_from_window_state(window: Option<WindowStateSnapshot>) -> Des
 }
 
 #[cfg(desktop)]
-fn desktop_window_snapshot(app: &tauri::AppHandle) -> Option<WindowStateSnapshot> {
-    app.get_webview_window("main")
+fn desktop_window_snapshot(
+    app: &tauri::AppHandle,
+    configured_level: LogLevel,
+) -> Option<WindowStateSnapshot> {
+    let snapshot = app
+        .get_webview_window("main")
         .map(|window| WindowStateSnapshot {
             fullscreen: window.is_fullscreen().unwrap_or(false),
             focused: window.is_focused().unwrap_or(true),
             minimized: window.is_minimized().unwrap_or(false),
             visible: window.is_visible().unwrap_or(true),
-        })
+        });
+
+    match snapshot {
+        Some(snapshot) => {
+            log_desktop_signals(
+                LogLevel::Debug,
+                configured_level,
+                format_args!("fallback_window_snapshot={snapshot:?}"),
+            );
+            Some(snapshot)
+        }
+        None => {
+            log_desktop_signals(
+                LogLevel::Trace,
+                configured_level,
+                format_args!("fallback_window_snapshot unavailable: main window not found"),
+            );
+            None
+        }
+    }
 }
 
 #[cfg(desktop)]
-fn desktop_signals_from_desktop_window(app: &tauri::AppHandle) -> DesktopSignals {
-    desktop_signals_from_window_state(desktop_window_snapshot(app))
+fn desktop_signals_from_desktop_window(
+    app: &tauri::AppHandle,
+    configured_level: LogLevel,
+) -> DesktopSignals {
+    let signals = desktop_signals_from_window_state(desktop_window_snapshot(app, configured_level));
+    log_desktop_signals(
+        LogLevel::Debug,
+        configured_level,
+        format_args!("fallback_desktop_signals={signals:?}"),
+    );
+    signals
 }
 
 #[cfg(desktop)]
 trait DesktopSignalProvider {
-    fn collect(&self, app: &tauri::AppHandle, idle_threshold_seconds: u64) -> DesktopSignals;
+    fn collect(
+        &self,
+        app: &tauri::AppHandle,
+        idle_threshold_seconds: u64,
+        configured_level: LogLevel,
+    ) -> DesktopSignals;
 }
 
 const NATIVE_IDLE_SIGNAL_FLOOR_SECONDS: f64 = 1.0;
@@ -105,6 +151,36 @@ fn linux_idle_from_sources(
     }
 }
 
+fn linux_idle_from_sources_logged(
+    fallback: DesktopSignals,
+    native_idle_active: Option<bool>,
+    configured_level: LogLevel,
+) -> DesktopSignals {
+    match native_idle_active {
+        Some(native_idle_active) => log_desktop_signals(
+            LogLevel::Debug,
+            configured_level,
+            format_args!("native_idle_result={native_idle_active}"),
+        ),
+        None => log_desktop_signals(
+            LogLevel::Trace,
+            configured_level,
+            format_args!(
+                "native_idle_result unavailable; falling back to window idle_active={}",
+                fallback.idle_active
+            ),
+        ),
+    }
+
+    let signals = linux_idle_from_sources(fallback, native_idle_active);
+    log_desktop_signals(
+        LogLevel::Debug,
+        configured_level,
+        format_args!("merged_desktop_signals={signals:?}"),
+    );
+    signals
+}
+
 fn windows_signals_from_sources(
     fallback: DesktopSignals,
     native_idle_active: Option<bool>,
@@ -114,6 +190,54 @@ fn windows_signals_from_sources(
         fullscreen_active: native_fullscreen_active.unwrap_or(fallback.fullscreen_active),
         idle_active: native_idle_active.unwrap_or(fallback.idle_active),
     }
+}
+
+fn windows_signals_from_sources_logged(
+    fallback: DesktopSignals,
+    native_idle_active: Option<bool>,
+    native_fullscreen_active: Option<bool>,
+    configured_level: LogLevel,
+) -> DesktopSignals {
+    match native_idle_active {
+        Some(native_idle_active) => log_desktop_signals(
+            LogLevel::Debug,
+            configured_level,
+            format_args!("native_idle_result={native_idle_active}"),
+        ),
+        None => log_desktop_signals(
+            LogLevel::Trace,
+            configured_level,
+            format_args!(
+                "native_idle_result unavailable; falling back to window idle_active={}",
+                fallback.idle_active
+            ),
+        ),
+    }
+
+    match native_fullscreen_active {
+        Some(native_fullscreen_active) => log_desktop_signals(
+            LogLevel::Debug,
+            configured_level,
+            format_args!("native_fullscreen_result={native_fullscreen_active}"),
+        ),
+        None => log_desktop_signals(
+            LogLevel::Trace,
+            configured_level,
+            format_args!(
+                "native_fullscreen_result unavailable; falling back to window fullscreen_active={}",
+                fallback.fullscreen_active
+            ),
+        ),
+    }
+
+    let signals =
+        windows_signals_from_sources(fallback, native_idle_active, native_fullscreen_active);
+    log_desktop_signals(
+        LogLevel::Debug,
+        configured_level,
+        format_args!("merged_desktop_signals={signals:?}"),
+    );
+    signals
 }
 
 fn screen_rect_covers_monitor(window: ScreenRect, monitor: ScreenRect) -> bool {
@@ -154,6 +278,54 @@ fn macos_signals_from_sources(
     }
 }
 
+fn macos_signals_from_sources_logged(
+    fallback: DesktopSignals,
+    native_idle_active: Option<bool>,
+    native_fullscreen_active: Option<bool>,
+    configured_level: LogLevel,
+) -> DesktopSignals {
+    match native_idle_active {
+        Some(native_idle_active) => log_desktop_signals(
+            LogLevel::Debug,
+            configured_level,
+            format_args!("native_idle_result={native_idle_active}"),
+        ),
+        None => log_desktop_signals(
+            LogLevel::Trace,
+            configured_level,
+            format_args!(
+                "native_idle_result unavailable; falling back to window idle_active={}",
+                fallback.idle_active
+            ),
+        ),
+    }
+
+    match native_fullscreen_active {
+        Some(native_fullscreen_active) => log_desktop_signals(
+            LogLevel::Debug,
+            configured_level,
+            format_args!("native_fullscreen_result={native_fullscreen_active}"),
+        ),
+        None => log_desktop_signals(
+            LogLevel::Trace,
+            configured_level,
+            format_args!(
+                "native_fullscreen_result unavailable; falling back to window fullscreen_active={}",
+                fallback.fullscreen_active
+            ),
+        ),
+    }
+
+    let signals =
+        macos_signals_from_sources(fallback, native_idle_active, native_fullscreen_active);
+    log_desktop_signals(
+        LogLevel::Debug,
+        configured_level,
+        format_args!("merged_desktop_signals={signals:?}"),
+    );
+    signals
+}
+
 fn macos_other_app_fullscreen_from_bounds(
     frontmost_window: Option<usize>,
     app_window: Option<usize>,
@@ -174,9 +346,10 @@ fn macos_other_app_fullscreen_from_bounds(
 #[cfg(all(desktop, target_os = "linux"))]
 mod platform {
     use super::{
-        desktop_signals_from_desktop_window, linux_idle_from_sources,
+        desktop_signals_from_desktop_window, linux_idle_from_sources_logged,
         linux_native_idle_active_from_env, DesktopSignalProvider, DesktopSignals,
     };
+    use crate::logger::LogLevel;
 
     pub(super) struct PlatformDesktopSignalProvider;
 
@@ -188,9 +361,14 @@ mod platform {
     }
 
     impl DesktopSignalProvider for PlatformDesktopSignalProvider {
-        fn collect(&self, app: &tauri::AppHandle, _idle_threshold_seconds: u64) -> DesktopSignals {
-            let fallback = desktop_signals_from_desktop_window(app);
-            linux_idle_from_sources(fallback, native_idle_active())
+        fn collect(
+            &self,
+            app: &tauri::AppHandle,
+            _idle_threshold_seconds: u64,
+            configured_level: LogLevel,
+        ) -> DesktopSignals {
+            let fallback = desktop_signals_from_desktop_window(app, configured_level);
+            linux_idle_from_sources_logged(fallback, native_idle_active(), configured_level)
         }
     }
 }
@@ -200,10 +378,11 @@ mod platform {
     use std::{ffi::c_void, ptr};
 
     use super::{
-        desktop_signals_from_desktop_window, idle_active_from_seconds,
-        macos_other_app_fullscreen_from_bounds, macos_signals_from_sources, DesktopSignalProvider,
-        DesktopSignals, ScreenRect,
+        desktop_signals_from_desktop_window, idle_active_from_seconds, log_desktop_signals,
+        macos_other_app_fullscreen_from_bounds, macos_signals_from_sources_logged,
+        DesktopSignalProvider, DesktopSignals, ScreenRect,
     };
+    use crate::logger::LogLevel;
     use core_graphics::{display::CGDisplay, event_source::CGEventSourceStateID, geometry::CGRect};
     use tauri::Manager;
 
@@ -311,8 +490,17 @@ mod platform {
         callback()
     }
 
-    fn native_idle_active() -> Option<bool> {
-        native_idle_seconds().map(idle_active_from_seconds)
+    fn native_idle_active(configured_level: LogLevel) -> Option<bool> {
+        let idle_seconds = native_idle_seconds()?;
+        let idle_active = idle_active_from_seconds(idle_seconds);
+        log_desktop_signals(
+            LogLevel::Debug,
+            configured_level,
+            format_args!(
+                "native_idle_sample_seconds={idle_seconds:.3} native_idle_result={idle_active}"
+            ),
+        );
+        Some(idle_active)
     }
 
     fn frontmost_application_pid() -> Option<i32> {
@@ -474,33 +662,64 @@ mod platform {
         width * height
     }
 
-    fn native_fullscreen_active(app: &tauri::AppHandle) -> Option<bool> {
+    fn native_fullscreen_active(
+        app: &tauri::AppHandle,
+        configured_level: LogLevel,
+    ) -> Option<bool> {
         with_autorelease_pool(|| {
             let frontmost_pid = frontmost_application_pid()?;
             if frontmost_pid == std::process::id() as i32 {
+                log_desktop_signals(
+                    LogLevel::Debug,
+                    configured_level,
+                    format_args!(
+                        "native_fullscreen_sample frontmost_pid={frontmost_pid} result=false reason=self_frontmost"
+                    ),
+                );
                 return Some(false);
             }
 
             let frontmost_window = frontmost_window_info(frontmost_pid)?;
             let screen_bounds = screen_bounds_for_window(frontmost_window.bounds)?;
-
-            macos_other_app_fullscreen_from_bounds(
+            let app_window = app_window_number(app);
+            let native_fullscreen_active = macos_other_app_fullscreen_from_bounds(
                 Some(frontmost_window.window_number),
-                app_window_number(app),
+                app_window,
                 Some(frontmost_window.bounds),
                 Some(screen_bounds),
-            )
+            );
+
+            if let Some(native_fullscreen_active) = native_fullscreen_active {
+                log_desktop_signals(
+                    LogLevel::Debug,
+                    configured_level,
+                    format_args!(
+                        "native_fullscreen_sample frontmost_pid={frontmost_pid} frontmost_window={} app_window={app_window:?} frontmost_bounds={:?} screen_bounds={:?} native_fullscreen_result={native_fullscreen_active}",
+                        frontmost_window.window_number,
+                        frontmost_window.bounds,
+                        screen_bounds,
+                    ),
+                );
+            }
+
+            native_fullscreen_active
         })
     }
 
     impl DesktopSignalProvider for PlatformDesktopSignalProvider {
-        fn collect(&self, app: &tauri::AppHandle, idle_threshold_seconds: u64) -> DesktopSignals {
-            let fallback = desktop_signals_from_desktop_window(app);
+        fn collect(
+            &self,
+            app: &tauri::AppHandle,
+            idle_threshold_seconds: u64,
+            configured_level: LogLevel,
+        ) -> DesktopSignals {
+            let fallback = desktop_signals_from_desktop_window(app, configured_level);
             let _ = idle_threshold_seconds;
-            macos_signals_from_sources(
+            macos_signals_from_sources_logged(
                 fallback,
-                native_idle_active(),
-                native_fullscreen_active(app),
+                native_idle_active(configured_level),
+                native_fullscreen_active(app, configured_level),
+                configured_level,
             )
         }
     }
@@ -510,9 +729,10 @@ mod platform {
 mod platform {
     use super::{
         desktop_signals_from_desktop_window, idle_active_from_seconds,
-        windows_other_app_fullscreen_from_bounds, windows_signals_from_sources,
+        windows_other_app_fullscreen_from_bounds, windows_signals_from_sources_logged,
         DesktopSignalProvider, DesktopSignals, ScreenRect,
     };
+    use crate::logger::LogLevel;
     use tauri::Manager;
     use windows_sys::Win32::Foundation::{HWND, RECT};
     use windows_sys::Win32::Graphics::Gdi::{
@@ -633,12 +853,18 @@ mod platform {
     }
 
     impl DesktopSignalProvider for PlatformDesktopSignalProvider {
-        fn collect(&self, app: &tauri::AppHandle, _idle_threshold_seconds: u64) -> DesktopSignals {
-            let fallback = desktop_signals_from_desktop_window(app);
-            windows_signals_from_sources(
+        fn collect(
+            &self,
+            app: &tauri::AppHandle,
+            _idle_threshold_seconds: u64,
+            configured_level: LogLevel,
+        ) -> DesktopSignals {
+            let fallback = desktop_signals_from_desktop_window(app, configured_level);
+            windows_signals_from_sources_logged(
                 fallback,
                 native_idle_active(),
                 native_fullscreen_active(app),
+                configured_level,
             )
         }
     }
@@ -652,30 +878,45 @@ mod platform {
 ))]
 mod platform {
     use super::{desktop_signals_from_desktop_window, DesktopSignalProvider, DesktopSignals};
+    use crate::logger::LogLevel;
 
     pub(super) struct PlatformDesktopSignalProvider;
 
     impl DesktopSignalProvider for PlatformDesktopSignalProvider {
-        fn collect(&self, app: &tauri::AppHandle, _idle_threshold_seconds: u64) -> DesktopSignals {
-            desktop_signals_from_desktop_window(app)
+        fn collect(
+            &self,
+            app: &tauri::AppHandle,
+            _idle_threshold_seconds: u64,
+            configured_level: LogLevel,
+        ) -> DesktopSignals {
+            desktop_signals_from_desktop_window(app, configured_level)
         }
     }
 }
 
 #[cfg(desktop)]
+pub fn collect_desktop_signals_with_level(
+    app: &tauri::AppHandle,
+    idle_threshold_seconds: u64,
+    configured_level: LogLevel,
+) -> DesktopSignals {
+    platform::PlatformDesktopSignalProvider.collect(app, idle_threshold_seconds, configured_level)
+}
+
+#[cfg(not(desktop))]
+pub fn collect_desktop_signals_with_level(
+    _app: &tauri::AppHandle,
+    _idle_threshold_seconds: u64,
+    _configured_level: LogLevel,
+) -> DesktopSignals {
+    desktop_signals_without_window()
+}
+
 pub fn collect_desktop_signals(
     app: &tauri::AppHandle,
     idle_threshold_seconds: u64,
 ) -> DesktopSignals {
-    platform::PlatformDesktopSignalProvider.collect(app, idle_threshold_seconds)
-}
-
-#[cfg(not(desktop))]
-pub fn collect_desktop_signals(
-    _app: &tauri::AppHandle,
-    _idle_threshold_seconds: u64,
-) -> DesktopSignals {
-    desktop_signals_without_window()
+    collect_desktop_signals_with_level(app, idle_threshold_seconds, LogLevel::Off)
 }
 
 #[cfg(test)]
@@ -780,7 +1021,7 @@ mod tests {
     }
 
     #[test]
-    fn idle_threshold_uses_elapsed_idle_seconds() {
+    fn idle_active_from_seconds_uses_elapsed_idle_seconds() {
         assert!(!idle_active_from_seconds(0.0));
         assert!(!idle_active_from_seconds(0.5));
         assert!(idle_active_from_seconds(1.0));
@@ -899,7 +1140,7 @@ mod tests {
     }
 
     #[test]
-    fn macos_signals_from_sources_uses_native_values_when_present() {
+    fn macos_signals_from_sources_prefers_native_values_when_present() {
         let fallback = DesktopSignals {
             fullscreen_active: false,
             idle_active: true,
