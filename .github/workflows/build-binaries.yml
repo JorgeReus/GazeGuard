@@ -12,10 +12,10 @@ jobs:
   android:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - parallel:
-          - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
             with:
               distribution: temurin
               java-version: '21'
@@ -39,7 +39,7 @@ jobs:
         working-directory: src-tauri
         run: cargo tauri android build --apk --target aarch64 armv7 i686 x86_64 --ci
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: gazeguard-android-universal
           path: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
@@ -47,7 +47,7 @@ jobs:
   macos:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -64,7 +64,7 @@ jobs:
         working-directory: src-tauri
         run: cargo tauri build --target universal-apple-darwin --bundles dmg --no-sign --ci
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: gazeguard-macos-universal
           path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/gazeguard_*_universal.dmg
@@ -76,7 +76,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: release-assets
           merge-multiple: true
