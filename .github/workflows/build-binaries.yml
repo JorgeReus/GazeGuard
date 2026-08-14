@@ -34,6 +34,14 @@ jobs:
 
       - run: npm install
 
+      - name: Route generated Android Cargo calls to npm CLI
+        run: |
+          real_cargo=$(command -v cargo)
+          mkdir -p "$GITHUB_WORKSPACE/.ci-bin"
+          printf '#!/bin/sh\nif [ "$1" = "tauri" ]; then shift; exec npx tauri "$@"; fi\nexec %s "$@"\n' "$real_cargo" > "$GITHUB_WORKSPACE/.ci-bin/cargo"
+          chmod +x "$GITHUB_WORKSPACE/.ci-bin/cargo"
+          echo "$GITHUB_WORKSPACE/.ci-bin" >> "$GITHUB_PATH"
+
       - parallel:
           - name: Install Android SDK
             run: sdkmanager "platforms;android-36" "build-tools;36.1.0" "ndk;29.0.14206865"
