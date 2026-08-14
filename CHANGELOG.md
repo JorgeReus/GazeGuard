@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/JorgeReus/GazeGuard/compare/v0.2.1...v0.2.2) (2026-08-14)
+
+
+### Bug Fixes
+
+* build for android ([3cc42ed](https://github.com/JorgeReus/GazeGuard/commit/3cc42edcb367acb605d181a5fbaa52cbf7251979))
+
 ## [0.2.1](https://github.com/JorgeReus/GazeGuard/compare/v0.2.0...v0.2.1) (2026-08-14)
 
 
