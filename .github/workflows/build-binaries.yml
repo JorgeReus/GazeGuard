@@ -13,6 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - parallel:
           - uses: actions/setup-java@v5
             with:
@@ -28,25 +32,27 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - run: npm install
+
       - parallel:
           - name: Install Android SDK
             run: sdkmanager "platforms;android-36" "build-tools;36.1.0" "ndk;29.0.14206865"
-          - name: Install Tauri CLI
-            run: cargo install tauri-cli --version 2.10.1 --locked
 
-      - name: Build universal APK
-        working-directory: src-tauri
-        run: cargo tauri android build --apk --target aarch64 armv7 i686 x86_64 --ci
-
-      - uses: actions/upload-artifact@v5
+      - uses: tauri-apps/tauri-action@v1
         with:
-          name: gazeguard-android-universal
-          path: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
+          projectPath: src-tauri
+          mobile: android
+          args: '--apk --target aarch64 armv7 i686 x86_64 --ci'
+          uploadWorkflowArtifacts: true
 
   macos:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -56,17 +62,13 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version 2.10.1 --locked
+      - run: npm install
 
-      - name: Build universal DMG
-        working-directory: src-tauri
-        run: cargo tauri build --target universal-apple-darwin --bundles dmg --no-sign --ci
-
-      - uses: actions/upload-artifact@v5
+      - uses: tauri-apps/tauri-action@v1
         with:
-          name: gazeguard-macos-universal
-          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/gazeguard_*_universal.dmg
+          projectPath: src-tauri
+          args: '--target universal-apple-darwin --bundles dmg --no-sign --ci'
+          uploadWorkflowArtifacts: true
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

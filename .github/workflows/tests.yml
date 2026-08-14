@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -34,6 +35,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - parallel:
           - uses: actions/setup-java@v5
             with:
@@ -45,15 +50,17 @@ jobs:
       - name: Install Android SDK
         run: sdkmanager "platforms;android-36" "build-tools;36.1.0" "ndk;29.0.14206865"
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version 2.10.1 --locked
+      - run: npm install
 
       - name: Generate Tauri Android files
         working-directory: src-tauri
         run: |
           rm -f gen/android/tauri.settings.gradle
-          cargo tauri android init --ci --skip-targets-install || test -f gen/android/tauri.settings.gradle
-          test -f gen/android/tauri.settings.gradle
+          npx tauri android init --ci --skip-targets-install || true
+          sed -i 's/gradle-9\.1\.0-bin/gradle-8\.14\.3-bin/' gen/android/gradle/wrapper/gradle-wrapper.properties
+          npx tauri android build --debug --apk --ci
+          test -s gen/android/tauri.settings.gradle
+          ls -l gen/android/tauri.settings.gradle
 
       - name: Run Android unit tests
         working-directory: src-tauri/gen/android

@@ -14,8 +14,9 @@ use serde::Serialize;
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
 #[cfg(desktop)]
 use tauri::Emitter;
@@ -29,6 +30,59 @@ use tauri::{
 };
 
 type SharedBreakEngine = Arc<Mutex<BreakEngine>>;
+
+#[cfg(desktop)]
+struct TrayUpdater {
+    stop: Arc<(Mutex<bool>, Condvar)>,
+    handle: Mutex<Option<JoinHandle<()>>>,
+}
+
+#[cfg(desktop)]
+impl TrayUpdater {
+    fn start(app: tauri::AppHandle, engine: SharedBreakEngine) -> Self {
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let worker_stop = stop.clone();
+        let handle = thread::spawn(move || Self::run(app, engine, worker_stop));
+        Self {
+            stop,
+            handle: Mutex::new(Some(handle)),
+        }
+    }
+
+    fn run(app: tauri::AppHandle, engine: SharedBreakEngine, stop: Arc<(Mutex<bool>, Condvar)>) {
+        loop {
+            refresh_desktop_signals(&app, &engine);
+            refresh_tray_title(&app);
+
+            let (lock, wake) = &*stop;
+            let stopped = lock
+                .lock()
+                .map(|stopped| {
+                    let (stopped, _) = wake
+                        .wait_timeout_while(stopped, Duration::from_secs(1), |stopped| !*stopped)
+                        .expect("tray updater condvar poisoned");
+                    *stopped
+                })
+                .unwrap_or(true);
+            if stopped {
+                break;
+            }
+        }
+    }
+
+    fn shutdown(&self) {
+        let (lock, wake) = &*self.stop;
+        if let Ok(mut stopped) = lock.lock() {
+            *stopped = true;
+            wake.notify_one();
+        }
+        if let Ok(mut handle) = self.handle.lock() {
+            if let Some(handle) = handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+}
 
 static SHARED_BREAK_ENGINE: OnceLock<Mutex<Option<SharedBreakEngine>>> = OnceLock::new();
 static SNAPSHOT_APP_DATA_DIR: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -473,15 +527,36 @@ fn refresh_tray_title(app: &tauri::AppHandle) {
 fn refresh_tray_title(_app: &tauri::AppHandle) {}
 
 #[cfg(desktop)]
-fn spawn_tray_updater(app: tauri::AppHandle) {
-    thread::spawn(move || loop {
-        refresh_tray_title(&app);
-        thread::sleep(Duration::from_secs(1));
-    });
-}
+fn refresh_desktop_signals(app: &tauri::AppHandle, engine: &SharedBreakEngine) {
+    let (idle_threshold_seconds, configured_log_level) = match engine.lock() {
+        Ok(guard) => (
+            guard.config().idle_time.saturating_mul(60),
+            guard.config().log_level,
+        ),
+        Err(_) => return,
+    };
 
-#[cfg(not(desktop))]
-fn spawn_tray_updater(_app: tauri::AppHandle) {}
+    let signals = crate::desktop_signals::collect_desktop_signals_with_level(
+        app,
+        idle_threshold_seconds,
+        configured_log_level,
+    );
+
+    if let Ok(mut guard) = engine.lock() {
+        let status = apply_desktop_signals_to_engine(&mut guard, signals);
+        crate::logger::log(
+            crate::logger::LogLevel::Debug,
+            configured_log_level,
+            "desktop_signals",
+            format_args!(
+                "rust_updater_applied_signals={signals:?} phase={:?}",
+                status.phase
+            ),
+        );
+    }
+
+    let _ = save_registered_engine_snapshot(unix_now_seconds());
+}
 
 #[cfg(desktop)]
 fn spawn_config_watcher(
@@ -1027,7 +1102,7 @@ pub fn run() {
                     .build(app)?;
 
                 refresh_tray_title(app.handle());
-                spawn_tray_updater(app.handle().clone());
+                app.manage(TrayUpdater::start(app.handle().clone(), engine.clone()));
 
                 // Hide the main window on startup (tray only mode)
                 if let Some(window) = app.get_webview_window("main") {
@@ -1061,6 +1136,8 @@ pub fn run() {
         .run(|app, event| {
             let _ = &app;
             if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+                #[cfg(desktop)]
+                app.state::<TrayUpdater>().shutdown();
                 if let Err(error) = save_registered_engine_snapshot(unix_now_seconds()) {
                     eprintln!("failed to save break engine snapshot on exit: {error}");
                 }
