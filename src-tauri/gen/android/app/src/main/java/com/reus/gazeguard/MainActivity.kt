@@ -21,10 +21,17 @@ class MainActivity : TauriActivity() {
     private val TAG = "MainActivity"
 
     companion object {
+        const val PREFS_NAME = "gazeguard_preferences"
+        const val PREF_BREAK_NOTIFICATIONS = "break_notifications_enabled"
+
         @Volatile
         private var appVisible: Boolean = false
 
         fun isAppVisible(): Boolean = appVisible
+
+        fun breakNotificationsEnabled(context: android.content.Context): Boolean =
+            context.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                .getBoolean(PREF_BREAK_NOTIFICATIONS, true)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -130,6 +137,18 @@ class MainActivity : TauriActivity() {
                 }
                 startActivity(intent)
             }
+        }
+
+        @JavascriptInterface
+        fun areBreakNotificationsEnabled(): Boolean =
+            breakNotificationsEnabled(this@MainActivity)
+
+        @JavascriptInterface
+        fun setBreakNotificationsEnabled(enabled: Boolean) {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .edit()
+                .putBoolean(PREF_BREAK_NOTIFICATIONS, enabled)
+                .apply()
         }
 
         @JavascriptInterface

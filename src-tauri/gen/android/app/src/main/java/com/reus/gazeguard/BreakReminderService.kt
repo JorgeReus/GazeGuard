@@ -103,12 +103,12 @@ class BreakReminderService : Service() {
                 overlayAllowed = canDrawBreakOverlay(),
             )
 
-            if (effects.showWarningNotification) {
+            if (effects.showWarningNotification && MainActivity.breakNotificationsEnabled(this)) {
                 Log.d(TAG, "Rust warning phase detected")
                 showWarningNotification(snapshot.message)
             }
 
-            if (effects.showBreakNotification) {
+            if (effects.showBreakNotification && MainActivity.breakNotificationsEnabled(this)) {
                 Log.d(TAG, "Rust break phase detected")
                 showBreakNotification(snapshot.message)
             }
