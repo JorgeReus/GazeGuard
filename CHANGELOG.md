@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/JorgeReus/GazeGuard/compare/v0.2.0...v0.2.1) (2026-08-14)
+
+
+### Bug Fixes
+
+* added notifications disabler ([3d64636](https://github.com/JorgeReus/GazeGuard/commit/3d646361ab281860e3a39dbc0236bbeb2dd63d61))
+
 ## [0.2.0](https://github.com/JorgeReus/GazeGuard/compare/v0.1.0...v0.2.0) (2026-08-13)
 
 
