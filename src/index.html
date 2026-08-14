@@ -145,6 +145,7 @@
     <p id="androidAlertSetupText">Android needs permission to show aggressive break alerts while the app is in the background.</p>
     <button id="openFullScreenAlertSettings">Allow Full-Screen Break Alerts</button>
     <button id="openNotificationSettings">Open Notification Settings</button>
+    <button id="toggleBreakNotifications">Disable Break Notifications</button>
     <button id="openOverlaySettings">Allow Break Overlay</button>
   </div>
   <div id="disableOptions"></div>
@@ -585,6 +586,18 @@
         bridge.openNotificationSettings?.();
       } catch (error) {
         console.error('Failed to open notification settings:', error);
+      }
+    });
+
+    document.getElementById('toggleBreakNotifications')?.addEventListener('click', async (event) => {
+      try {
+        const bridge = await waitForAndroidBridge();
+        const button = event.currentTarget;
+        const enabled = bridge.areBreakNotificationsEnabled?.() ?? true;
+        bridge.setBreakNotificationsEnabled?.(!enabled);
+        button.textContent = enabled ? 'Enable Break Notifications' : 'Disable Break Notifications';
+      } catch (error) {
+        console.error('Failed to update break notification setting:', error);
       }
     });
 
