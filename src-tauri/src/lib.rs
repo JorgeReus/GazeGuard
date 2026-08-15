@@ -1106,6 +1106,16 @@ pub fn run() {
 
                 // Hide the main window on startup (tray only mode)
                 if let Some(window) = app.get_webview_window("main") {
+                    #[cfg(target_os = "macos")]
+                    {
+                        let window_to_hide = window.clone();
+                        window.on_window_event(move |event| {
+                            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                                api.prevent_close();
+                                let _ = window_to_hide.hide();
+                            }
+                        });
+                    }
                     let _ = window.hide();
                 }
             }
