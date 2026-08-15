@@ -5,14 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Take a Break</title>
   <style>
+    :root { --break-bg:#f8f9ff; --break-text:#121c2a; --break-muted:#404848; --break-secondary:#585c5f; --break-border:#bfc8c8; --break-primary:#306363; --break-primary-container:#4a7c7c; }
+    :root[data-theme="dark"] { --break-bg:#202124; --break-text:#f6f6f6; --break-muted:#c7cccc; --break-secondary:#b8bfc2; --break-border:#555b60; --break-primary:#9cd0d0; }
+    @media (prefers-color-scheme: dark) { :root[data-theme="system"] { --break-bg:#202124; --break-text:#f6f6f6; --break-muted:#c7cccc; --break-secondary:#b8bfc2; --break-border:#555b60; --break-primary:#9cd0d0; } }
     * {
       margin: 0;
       padding: 0;
       box-sizing: border-box;
     }
     body {
-      background-color: #000000;
-      color: #ffffff;
+      background-color: var(--break-bg);
+      color: var(--break-text);
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       display: flex;
       flex-direction: column;
@@ -22,23 +25,65 @@
       overflow: hidden;
       padding: 24px 24px 120px;
     }
+    .break-content {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      animation: break-fade-in 500ms ease-out both;
+    }
+    body.is-exiting .break-content {
+      animation: break-fade-out 350ms ease-in both;
+    }
+    .action-bar {
+      animation: controls-fade-in 450ms 150ms ease-out both;
+    }
+    body.is-exiting .action-bar {
+      animation: controls-fade-out 250ms ease-in both;
+    }
+    @keyframes break-fade-in {
+      from { opacity: 0; transform: scale(0.96); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    @keyframes break-fade-out {
+      from { opacity: 1; transform: scale(1); }
+      to { opacity: 0; transform: scale(0.98); }
+    }
+    @keyframes controls-fade-in {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    @keyframes controls-fade-out {
+      from { opacity: 1; }
+      to { opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .break-content, .action-bar, body.is-exiting .break-content, body.is-exiting .action-bar { animation-duration: 1ms; animation-delay: 0ms; }
+    }
+    .pulse-ring { position:absolute; inset:0; border:2px solid var(--break-primary); opacity:.2; border-radius:50%; animation:pulse-ring 4s cubic-bezier(.4,0,.2,1) infinite; }
+    .pulse-ring.inner { inset:16px; border-width:1px; animation-delay:500ms; }
+    .indicator { position:relative; width:192px; height:192px; margin-bottom:48px; display:grid; place-items:center; }
+    .indicator-icon { position:relative; z-index:1; width:96px; height:96px; display:grid; place-items:center; border-radius:50%; color:#ecfffe; background:var(--break-primary-container); font-size:48px; box-shadow:0 8px 24px #30636333; }
+    .guidance { margin-top:16px; color:var(--break-muted); font-size:24px; }
+    .hint { margin-top:8px; color:var(--break-secondary); font-size:18px; }
+    @keyframes pulse-ring { 0% { transform:scale(.95); box-shadow:0 0 0 0 #30636366; } 50% { transform:scale(1.05); box-shadow:0 0 0 40px #30636300; } 100% { transform:scale(.95); box-shadow:0 0 0 0 #30636300; } }
+    @media (prefers-reduced-motion: reduce) { .pulse-ring { animation:none; } }
     .message {
-      font-size: 48px;
-      font-weight: 300;
-      margin-bottom: 40px;
+      font-size: 0;
+      height: 0;
       text-align: center;
     }
     .timer {
-      font-size: 120px;
-      font-weight: 200;
+      color: var(--break-text);
+      font-size: 80px;
+      font-weight: 600;
       font-variant-numeric: tabular-nums;
     }
     .skip-button {
-      background: rgba(255, 255, 255, 0.1);
-      border: 1px solid rgba(255, 255, 255, 0.3);
-      color: white;
-      padding: 12px 30px;
-      border-radius: 6px;
+      background: var(--break-bg);
+      border: 2px solid var(--break-border);
+      color: var(--break-text);
+      padding: 16px 24px;
+      border-radius: 12px;
       font-size: 16px;
       cursor: pointer;
       transition: all 0.2s;
@@ -47,26 +92,28 @@
       background: rgba(255, 255, 255, 0.2);
     }
     .action-bar {
-      position: absolute;
-      left: 40px;
-      right: 40px;
+      position: fixed;
+      left: 50%;
+      width: min(448px, calc(100% - 48px));
+      transform: translateX(-50%);
       bottom: 40px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 20px;
     }
+    .action-bar > button, .postpone-controls { flex:1; }
     .postpone-controls {
       position: relative;
       display: flex;
       align-items: center;
     }
     .postpone-button {
-      background: rgba(255, 255, 255, 0.1);
-      border: 1px solid rgba(255, 255, 255, 0.3);
-      color: white;
-      padding: 12px 30px;
-      border-radius: 6px;
+      background: var(--break-bg);
+      border: 2px solid var(--break-border);
+      color: var(--break-text);
+      padding: 16px 24px;
+      border-radius: 12px;
       font-size: 16px;
       cursor: pointer;
       transition: all 0.2s;
@@ -105,12 +152,17 @@
   </style>
 </head>
 <body>
-  <div class="message" id="message">Take a Break</div>
-  <div class="timer" id="timer">0:00</div>
+  <div class="break-content">
+    <div class="indicator" aria-hidden="true"><div class="pulse-ring"></div><div class="pulse-ring inner"></div><div class="indicator-icon">◉</div></div>
+    <div class="message" id="message">Take a Break</div>
+    <div class="timer" id="timer">0:00</div>
+    <div class="guidance">Time to rest your eyes.</div>
+    <div class="hint">Look at something 20 feet away.</div>
+  </div>
   <div class="action-bar">
-    <button class="skip-button" id="skip">Skip Break</button>
+    <button class="skip-button" id="skip">› Skip</button>
     <div class="postpone-controls" id="postponeControls">
-      <button class="postpone-button" id="postpone">Postpone Break</button>
+      <button class="postpone-button" id="postpone">◷ Postpone</button>
       <div class="postpone-menu" id="postponeMenu"></div>
     </div>
   </div>
@@ -128,6 +180,17 @@
   let engineStatusErrorShown = false;
   let postponeOptions = [];
   let postponeEnabled = false;
+  let closing = false;
+
+  document.documentElement.dataset.theme = localStorage.getItem('gazeguard-theme') || 'system';
+
+  async function finishBreak(command) {
+    if (closing) return;
+    closing = true;
+    document.body.classList.add('is-exiting');
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await invoke(command);
+  }
 
   async function waitForTauriInvoke() {
     if (window.__TAURI__?.core?.invoke) {
@@ -227,7 +290,7 @@
     timerElement.textContent = formatTime(timeLeft);
 
     if (timeLeft <= 0) {
-      invoke('complete_break').catch(console.error);
+      finishBreak('complete_break').catch(console.error);
       return;
     }
 
@@ -296,7 +359,7 @@
         clearTimeout(timerId);
         timerId = null;
       }
-      await invoke('skip_break');
+      await finishBreak('skip_break');
     } catch (e) {
       console.error(e);
     }
