@@ -121,9 +121,18 @@
       cursor: not-allowed;
     }
   </style>
+  <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <h1>GazeGuard</h1>
+  <label id="themeSettings" for="themeSelect">
+    Theme
+    <select id="themeSelect">
+      <option value="system">Match System</option>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+    </select>
+  </label>
   <p id="tauri-status">Checking Tauri...</p>
 
   <button class="start" id="startService">Start Break Timer</button>
@@ -175,6 +184,18 @@
     const androidBreakMessageEl = document.getElementById('android-break-message');
     const androidBreakTimerEl = document.getElementById('android-break-timer');
     const androidBreakSkipBtn = document.getElementById('android-break-skip');
+    const themeSelectEl = document.getElementById('themeSelect');
+
+    function applyTheme(theme) {
+      document.documentElement.dataset.theme = theme;
+      themeSelectEl.value = theme;
+    }
+
+    applyTheme(localStorage.getItem('gazeguard-theme') ?? 'system');
+    themeSelectEl.addEventListener('change', () => {
+      localStorage.setItem('gazeguard-theme', themeSelectEl.value);
+      applyTheme(themeSelectEl.value);
+    });
 
     function ensureAndroidMainScreenChrome() {
       if (window.AndroidBridge?.exitImmersiveMode) {

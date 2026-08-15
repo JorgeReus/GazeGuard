@@ -17,6 +17,49 @@
   -webkit-text-size-adjust: 100%;
 }
 
+#themeSettings {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #555;
+}
+
+#themeSelect {
+  width: auto;
+  margin: 0;
+  padding: 8px 12px;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  color: #f6f6f6;
+  background-color: #202124;
+}
+
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] button,
+:root[data-theme="dark"] select {
+  color: inherit;
+  background-color: #303134;
+  border-color: #555;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] {
+    color-scheme: dark;
+    color: #f6f6f6;
+    background-color: #202124;
+  }
+
+  :root[data-theme="system"] input,
+  :root[data-theme="system"] button,
+  :root[data-theme="system"] select {
+    color: inherit;
+    background-color: #303134;
+    border-color: #555;
+  }
+}
+
 .container {
   margin: 0;
   padding-top: 10vh;
