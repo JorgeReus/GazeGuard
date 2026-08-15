@@ -1,663 +1,78 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GazeGuard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GazeGuard Settings</title>
+  <link rel="stylesheet" href="/styles.css">
   <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      padding: 20px;
-      max-width: 400px;
-      margin: 0 auto;
-    }
-    button {
-      width: 100%;
-      padding: 15px;
-      margin: 10px 0;
-      font-size: 16px;
-      border-radius: 8px;
-      border: none;
-      cursor: pointer;
-      transition: opacity 0.2s;
-    }
-    button:active {
-      opacity: 0.7;
-    }
-    .start {
-      background-color: #4CAF50;
-      color: white;
-    }
-    .stop {
-      background-color: #f44336;
-      color: white;
-    }
-    .test {
-      background-color: #2196F3;
-      color: white;
-    }
-    #status {
-      margin-top: 20px;
-      padding: 15px;
-      background-color: #f5f5f5;
-      border-radius: 8px;
-      min-height: 50px;
-    }
-    #androidAlertSetup {
-      margin-top: 16px;
-      padding: 14px;
-      border-radius: 10px;
-      background: #fff4d6;
-      border: 1px solid #f0d48a;
-      display: none;
-    }
-    #androidAlertSetup p {
-      margin: 0 0 10px 0;
-      color: #6b4f00;
-      line-height: 1.4;
-    }
-    #androidAlertSetup button {
-      margin: 8px 0 0 0;
-      padding: 12px;
-      font-size: 14px;
-      background: #1d3557;
-      color: white;
-    }
-    #countdownCard {
-      margin-top: 20px;
-      padding: 18px;
-      border-radius: 12px;
-      background: linear-gradient(135deg, #f0f7ff, #fff7e8);
-      text-align: center;
-    }
-    #countdownLabel {
-      display: block;
-      font-size: 14px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: #666;
-      margin-bottom: 8px;
-    }
-    #countdownValue {
-      font-size: 44px;
-      font-weight: 700;
-      font-variant-numeric: tabular-nums;
-      color: #1d3557;
-    }
-    #android-break-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.95);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      z-index: 9998;
-    }
-    #android-break-modal {
-      text-align: center;
-      color: #fff;
-      padding: 40px;
-    }
-    #android-break-message {
-      font-size: 36px;
-      margin-bottom: 24px;
-    }
-    #android-break-timer {
-      font-size: 96px;
-      font-weight: 200;
-      margin-bottom: 32px;
-    }
-    #android-break-skip {
-      padding: 14px 32px;
-      border-radius: 8px;
-      border: 1px solid rgba(255, 255, 255, 0.4);
-      background: rgba(255, 255, 255, 0.08);
-      color: white;
-      font-size: 16px;
-      cursor: pointer;
-    }
-    #android-break-skip:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
+    :root { --bg:#f8f9ff; --card:#fff; --soft:#eff4ff; --text:#121c2a; --muted:#404848; --line:#bfc8c8; --primary:#306363; }
+    :root[data-theme="dark"] { --bg:#202124; --card:#303134; --soft:#282a2d; --text:#f6f6f6; --muted:#c7cccc; --line:#555; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; display:flex; justify-content:center; align-items:center; padding:16px; background:#d9e3f6; color:var(--text); font:14px/20px Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    .window { width:400px; height:560px; overflow:hidden; display:flex; flex-direction:column; background:var(--bg); border:1px solid var(--line); border-radius:12px; box-shadow:0 10px 30px #0002; }
+    header { padding:24px 20px 16px; text-align:center; border-bottom:1px solid var(--line); background:var(--card); }
+    .icon { width:48px; height:48px; margin:auto auto 12px; display:grid; place-items:center; border-radius:16px; background:var(--soft); color:var(--primary); font-size:26px; }
+    h1 { margin:0 0 4px; font-size:20px; font-weight:500; } h2 { margin:0 0 12px; color:var(--muted); font-size:11px; letter-spacing:.08em; text-transform:uppercase; }
+    header p { margin:0; color:var(--muted); }
+    main { flex:1; overflow:auto; padding:16px 20px; } section { margin-bottom:16px; padding:16px; background:var(--card); border:1px solid var(--line); border-radius:8px; box-shadow:0 1px 3px #0001; }
+    .row { min-height:28px; display:flex; align-items:center; justify-content:space-between; gap:12px; margin:10px 0; }
+    .row:first-of-type { margin-top:0; } .row:last-of-type { margin-bottom:0; } .divider { height:1px; margin:14px 0; background:var(--line); }
+    input[type=number], select { width:64px; height:28px; padding:4px 8px; color:var(--text); background:var(--card); border:1px solid var(--line); border-radius:6px; }
+    select.wide { width:100%; } .unit { display:flex; align-items:center; gap:6px; color:var(--muted); }
+    .toggle { appearance:none; width:36px; height:20px; margin:0; position:relative; border:1px solid #d1d5db; border-radius:999px; background:#e5e7eb; cursor:pointer; transition:background .2s,border-color .2s,box-shadow .2s; }
+    .toggle::after { content:""; width:16px; height:16px; position:absolute; top:1px; left:1px; border-radius:50%; background:white; box-shadow:0 1px 2px #0003; transition:transform .2s; }
+    .toggle:checked { background:var(--primary); border-color:var(--primary); } .toggle:checked::after { transform:translateX(16px); }
+    .toggle:focus-visible { outline:0; box-shadow:0 0 0 3px #30636340; }
+    :root[data-theme="dark"] .toggle:not(:checked) { background:#4a5055; border-color:#687078; }
+    footer { padding:16px 20px; border-top:1px solid var(--line); background:var(--card); } .status { margin-bottom:12px; color:var(--muted); font-size:11px; } .dot { display:inline-block; width:8px; height:8px; margin-right:6px; border-radius:50%; background:var(--primary); }
+    .actions { display:flex; gap:12px; } button { flex:1; height:32px; border:1px solid var(--line); border-radius:6px; color:var(--text); background:var(--card); font-weight:500; cursor:pointer; } button.primary { color:white; border-color:var(--primary); background:var(--primary); }
+    #error { display:none; color:#ba1a1a; font-size:12px; }
+    @media (min-width: 600px) {
+      body { padding:0; background:var(--bg); align-items:stretch; }
+      .window { width:100%; height:100vh; border:0; border-radius:0; box-shadow:none; }
+      main { padding:24px 32px; }
+      main section { max-width:760px; margin-left:auto; margin-right:auto; }
+      footer { padding-left:32px; padding-right:32px; }
     }
   </style>
-  <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <h1>GazeGuard</h1>
-  <label id="themeSettings" for="themeSelect">
-    Theme
-    <select id="themeSelect">
-      <option value="system">Match System</option>
-      <option value="light">Light</option>
-      <option value="dark">Dark</option>
-    </select>
-  </label>
-  <p id="tauri-status">Checking Tauri...</p>
-
-  <button class="start" id="startService">Start Break Timer</button>
-  <button class="stop" id="stopService">Stop Break Timer</button>
-  <button class="test" id="testBreak">Test Break Screen</button>
-
-  <div id="countdownCard">
-    <strong id="countdownLabel">Next break in</strong>
-    <div id="countdownValue">0:00</div>
+  <div class="window">
+    <header><div class="icon">◉</div><h1>Settings</h1><p>Protect your eyes while you work</p></header>
+    <main>
+      <section><h2>Break schedule</h2>
+        <div class="row"><span>Short break interval</span><span class="unit"><input id="shortInterval" type="number" value="20">m</span></div>
+        <div class="row"><span>Short break duration</span><span class="unit"><input id="shortDuration" type="number" value="20">s</span></div><div class="divider"></div>
+        <div class="row"><span>Long break interval</span><span class="unit"><input id="longInterval" type="number" value="60">m</span></div>
+        <div class="row"><span>Long break duration</span><span class="unit"><input id="longDuration" type="number" value="5">m</span></div><div class="divider"></div>
+        <div class="row"><span>Enable notifications</span><input class="toggle" type="checkbox" checked></div>
+      </section>
+      <section><h2>Break experience</h2>
+        <div class="row"><span>Eye exercises</span><input class="toggle" type="checkbox" checked></div>
+        <div class="row"><span>Animate guidance</span><input class="toggle" type="checkbox" checked></div>
+        <div class="row"><span>Play sound (start/end)</span><input class="toggle" type="checkbox"></div>
+        <div class="row"><label for="exerciseStyle">Exercise style</label><select id="exerciseStyle" class="wide"><option>Automatic</option><option>Blinking</option><option>Gaze movement</option><option>Relaxation</option></select></div>
+      </section>
+      <section><h2>Appearance</h2><div class="row"><label for="themeSelect">Theme</label><select id="themeSelect" class="wide"><option value="system">Match System</option><option value="light">Light</option><option value="dark">Dark</option></select></div></section>
+      <section><h2>Behavior</h2>
+        <div class="row"><span>Start at login</span><input class="toggle" type="checkbox" checked></div><div class="row"><span>Pause during fullscreen</span><input class="toggle" type="checkbox" checked></div><div class="row"><span>Pause when idle</span><input class="toggle" type="checkbox"></div><div class="row"><span>Keep in menu bar</span><input class="toggle" type="checkbox" checked></div>
+      </section>
+      <p id="error"></p>
+    </main>
+    <footer><div class="status"><span class="dot"></span>Status: <span id="status">Ready</span></div><div class="actions"><button id="testBreak">Test Break</button><button id="save" class="primary">Save Settings</button></div></footer>
   </div>
-
-  <div id="status">
-    <strong>Status:</strong> <span id="statusText">Not started</span>
-  </div>
-  <div id="configReloadBanner" style="display:none; margin-top: 16px; padding: 14px; border-radius: 10px; background: #ffe5e5; border: 1px solid #d99;">
-    <strong>Config error:</strong> <span id="configReloadBannerText"></span>
-  </div>
-  <div id="androidAlertSetup">
-    <p id="androidAlertSetupText">Android needs permission to show aggressive break alerts while the app is in the background.</p>
-    <button id="openFullScreenAlertSettings">Allow Full-Screen Break Alerts</button>
-    <button id="openNotificationSettings">Open Notification Settings</button>
-    <button id="toggleBreakNotifications">Disable Break Notifications</button>
-    <button id="openOverlaySettings">Allow Break Overlay</button>
-  </div>
-  <div id="disableOptions"></div>
-
-  <div id="android-break-overlay" aria-live="polite" role="alert">
-    <div id="android-break-modal">
-      <div id="android-break-message">Take a Break</div>
-      <div id="android-break-timer">0:00</div>
-      <button id="android-break-skip">Skip Break</button>
-    </div>
-  </div>
-
   <script>
-    const statusEl = document.getElementById('statusText');
-    const tauriStatusEl = document.getElementById('tauri-status');
-    const disableOptionsEl = document.getElementById('disableOptions');
-    const countdownLabelEl = document.getElementById('countdownLabel');
-    const countdownValueEl = document.getElementById('countdownValue');
-    const androidAlertSetupEl = document.getElementById('androidAlertSetup');
-    const androidAlertSetupTextEl = document.getElementById('androidAlertSetupText');
-    const configReloadBannerEl = document.getElementById('configReloadBanner');
-    const configReloadBannerTextEl = document.getElementById('configReloadBannerText');
-    let statusPollId = null;
-    let breakWindowVisible = false;
-    let androidOverlayVisible = false;
-    const androidBreakOverlayEl = document.getElementById('android-break-overlay');
-    const androidBreakMessageEl = document.getElementById('android-break-message');
-    const androidBreakTimerEl = document.getElementById('android-break-timer');
-    const androidBreakSkipBtn = document.getElementById('android-break-skip');
-    const themeSelectEl = document.getElementById('themeSelect');
-
-    function applyTheme(theme) {
-      document.documentElement.dataset.theme = theme;
-      themeSelectEl.value = theme;
-    }
-
-    applyTheme(localStorage.getItem('gazeguard-theme') ?? 'system');
-    themeSelectEl.addEventListener('change', () => {
-      localStorage.setItem('gazeguard-theme', themeSelectEl.value);
-      applyTheme(themeSelectEl.value);
-    });
-
-    function ensureAndroidMainScreenChrome() {
-      if (window.AndroidBridge?.exitImmersiveMode) {
-        window.AndroidBridge.exitImmersiveMode();
-      }
-    }
-
-    ensureAndroidMainScreenChrome();
-
-    // Check Tauri availability
-    if (window.__TAURI__) {
-      tauriStatusEl.textContent = '✅ Tauri is available!';
-      tauriStatusEl.style.color = 'green';
-    } else {
-      tauriStatusEl.textContent = '❌ Tauri NOT available!';
-      tauriStatusEl.style.color = 'red';
-    }
-
     const { invoke } = window.__TAURI__.core;
-    const { listen } = window.__TAURI__.event;
-
-    function showConfigReloadBanner(message) {
-      configReloadBannerEl.style.display = 'block';
-      configReloadBannerTextEl.textContent = message;
-    }
-
-    function hideConfigReloadBanner() {
-      configReloadBannerEl.style.display = 'none';
-      configReloadBannerTextEl.textContent = '';
-    }
-
-    function isAndroidBridgeAvailable() {
-      return Boolean(window.AndroidBridge?.startBreakService && window.AndroidBridge?.stopBreakService);
-    }
-
-    function isAndroidPlatform() {
-      if (isAndroidBridgeAvailable()) {
-        return true;
-      }
-
-      const uaDataPlatform = navigator.userAgentData?.platform?.toLowerCase?.();
-      if (uaDataPlatform === 'android') {
-        return true;
-      }
-
-      const platform = navigator.platform?.toLowerCase?.() ?? '';
-      if (platform.includes('android')) {
-        return true;
-      }
-
-      const userAgent = navigator.userAgent?.toLowerCase?.() ?? '';
-      if (userAgent.includes('android')) {
-        return true;
-      }
-
-      return /wv|webview/i.test(userAgent) && navigator.maxTouchPoints > 0;
-    }
-
-    async function registerConfigReloadListeners() {
-      await Promise.all([
-        listen('config-reload-error', (event) => {
-          showConfigReloadBanner(event.payload?.message ?? 'Could not reload config.yaml. Using the last valid config.');
-        }),
-        listen('config-reload-success', async () => {
-          hideConfigReloadBanner();
-          const schedule = await invoke('get_break_schedule');
-          renderDisableOptions(schedule.disable_options);
-          await syncEngineStatus();
-        }),
-      ]);
-    }
-
-    function setAndroidAlertSetupVisible(visible, message = null) {
-      if (!androidAlertSetupEl) return;
-      androidAlertSetupEl.style.display = visible ? 'block' : 'none';
-      if (message && androidAlertSetupTextEl) {
-        androidAlertSetupTextEl.textContent = message;
-      }
-    }
-
-    async function syncAndroidAlertCapability() {
-      if (!isAndroidBridgeAvailable()) {
-        setAndroidAlertSetupVisible(false);
-        return;
-      }
-
-      try {
-        const bridge = await waitForAndroidBridge();
-        const allowed = bridge.canUseFullScreenBreakAlerts?.();
-        const overlayAllowed = bridge.canDrawBreakOverlay?.();
-        if (allowed && overlayAllowed) {
-          setAndroidAlertSetupVisible(false);
-        } else {
-          setAndroidAlertSetupVisible(
-            true,
-            'Android is blocking automatic background break presentation. Enable full-screen alerts, notifications, and break overlay permission for the app.'
-          );
-        }
-      } catch (error) {
-        console.error('Failed to check Android alert capability:', error);
-        setAndroidAlertSetupVisible(
-          true,
-          'Could not verify Android alert permissions. Open settings and allow notifications/full-screen alerts for the app.'
-        );
-      }
-    }
-
-    function stopStatusPolling() {
-      if (statusPollId !== null) {
-        clearInterval(statusPollId);
-        statusPollId = null;
-      }
-    }
-
-    function startStatusPolling() {
-      stopStatusPolling();
-      statusPollId = setInterval(() => {
-        Promise.all([syncActivitySignals(), syncEngineStatus()]).catch((error) => {
-          console.error('Failed to sync engine status:', error);
-        });
-      }, 1000);
-    }
-
-    function formatSeconds(totalSeconds) {
-      const mins = Math.floor(totalSeconds / 60);
-      const secs = totalSeconds % 60;
-      return `${mins}:${secs.toString().padStart(2, '0')}`;
-    }
-
-    function labelFromTemplate(name) {
-      return name
-        .split('_')
-        .slice(2)
-        .join(' ')
-        .replace(/\b\w/g, (letter) => letter.toUpperCase());
-    }
-
-    function setAndroidSkipState(canSkip, locked, mandatory) {
-      if (!androidBreakSkipBtn) return;
-      androidBreakSkipBtn.disabled = locked || !canSkip;
-      if (locked) {
-        androidBreakSkipBtn.textContent = 'Skip Locked';
-      } else if (mandatory || !canSkip) {
-        androidBreakSkipBtn.textContent = 'Mandatory Break';
-      } else {
-        androidBreakSkipBtn.textContent = 'Skip Break';
-      }
-    }
-
-    function showAndroidBreakOverlay(status) {
-      if (!androidBreakOverlayEl) return;
-      androidBreakMessageEl.textContent = status.current_break?.template_name
-        ? labelFromTemplate(status.current_break.template_name)
-        : status.current_break?.kind === 'long'
-          ? 'Take a Long Break'
-          : 'Take a Short Break';
-      const remainingSeconds = status.seconds_remaining ?? status.current_break?.duration_seconds ?? 0;
-      androidBreakTimerEl.textContent = formatSeconds(remainingSeconds);
-      const currentBreakMandatory = Boolean(status.current_break?.mandatory);
-      setAndroidSkipState(status.can_skip, status.skip_limit_reached, currentBreakMandatory);
-      androidBreakOverlayEl.style.display = 'flex';
-      androidOverlayVisible = true;
-    }
-
-    function hideAndroidBreakOverlay() {
-      if (!androidBreakOverlayEl) return;
-      androidBreakOverlayEl.style.display = 'none';
-      androidOverlayVisible = false;
-    }
-
-    async function syncEngineStatus() {
-      const status = await invoke('get_engine_status');
-      const remaining = status.seconds_remaining == null ? '' : ` (${formatSeconds(status.seconds_remaining)})`;
-      const postpone = status.postpone_reason ? `, postponed by ${status.postpone_reason}` : '';
-
-      if (status.phase === 'running') {
-        statusEl.textContent = `Running${remaining}`;
-        statusEl.style.color = 'green';
-        countdownLabelEl.textContent = 'Next break in';
-        countdownValueEl.textContent = formatSeconds(status.seconds_remaining ?? 0);
-        countdownValueEl.style.color = '#1d3557';
-        breakWindowVisible = false;
-      } else if (status.phase === 'warning') {
-        statusEl.textContent = `Warning before break${remaining}${postpone}`;
-        statusEl.style.color = '#b26a00';
-        countdownLabelEl.textContent = 'Break starts in';
-        countdownValueEl.textContent = formatSeconds(status.seconds_remaining ?? 0);
-        countdownValueEl.style.color = '#b26a00';
-      } else if (status.phase === 'on_break') {
-        const template = status.current_break?.template_name
-          ? `: ${labelFromTemplate(status.current_break.template_name)}`
-          : '';
-        statusEl.textContent = `Break in progress${remaining}${template}`;
-        statusEl.style.color = '#1f5fbf';
-        countdownLabelEl.textContent = 'Break in progress';
-        countdownValueEl.textContent = formatSeconds(status.seconds_remaining ?? 0);
-        countdownValueEl.style.color = '#1f5fbf';
-        const androidManaged = isAndroidBridgeAvailable();
-        if (!androidManaged && !breakWindowVisible) {
-          breakWindowVisible = true;
-          await invoke('show_break_window');
-        }
-        if (androidManaged) {
-          showAndroidBreakOverlay(status);
-        }
-      } else if (status.phase === 'disabled') {
-        statusEl.textContent = `Reminders disabled${remaining}`;
-        statusEl.style.color = '#7a4d00';
-        countdownLabelEl.textContent = 'Reminders resume in';
-        countdownValueEl.textContent = formatSeconds(status.seconds_remaining ?? 0);
-        countdownValueEl.style.color = '#7a4d00';
-      } else {
-        statusEl.textContent = 'Not started';
-        statusEl.style.color = 'inherit';
-        countdownLabelEl.textContent = 'Next break in';
-        countdownValueEl.textContent = '0:00';
-        countdownValueEl.style.color = '#1d3557';
-        breakWindowVisible = false;
-      }
-
-      if (status.phase !== 'on_break' && androidOverlayVisible) {
-        hideAndroidBreakOverlay();
-      }
-
-    }
-
-    async function syncActivitySignals() {
-      try {
-        if (isAndroidBridgeAvailable()) {
-          await invoke('set_idle_active', { active: false });
-          await invoke('set_fullscreen_active', { active: false });
-        } else {
-          await invoke('sync_desktop_window_state');
-        }
-      } catch (error) {
-        console.error('Failed to sync activity signals:', error);
-      }
-    }
-
-    function renderDisableOptions(options) {
-      disableOptionsEl.innerHTML = '';
-      if (!options?.length) {
-        return;
-      }
-
-      const heading = document.createElement('p');
-      heading.textContent = 'Disable reminders';
-      disableOptionsEl.appendChild(heading);
-
-      options.forEach((option) => {
-        const button = document.createElement('button');
-        const unit = option.time === 1 ? option.unit : `${option.unit}s`;
-        button.textContent = `${option.time} ${unit}`;
-        button.addEventListener('click', async () => {
-          try {
-            await invoke('disable_reminders', {
-              seconds: option.unit === 'hour' ? option.time * 60 * 60 : option.time * 60,
-            });
-            await syncEngineStatus();
-          } catch (error) {
-            statusEl.textContent = `Error: ${error}`;
-            statusEl.style.color = 'red';
-          }
-        });
-        disableOptionsEl.appendChild(button);
-      });
-    }
-
-    async function waitForAndroidBridge(timeoutMs = 2000) {
-      const deadline = Date.now() + timeoutMs;
-
-      while (Date.now() < deadline) {
-        if (window.AndroidBridge?.startBreakService && window.AndroidBridge?.stopBreakService) {
-          return window.AndroidBridge;
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-
-      throw new Error('Android bridge is unavailable. Background service only works on Android after the bridge loads.');
-    }
-
-    async function loadScheduleForUi() {
-      if (isAndroidPlatform()) {
-        return invoke('reload_runtime_config');
-      }
-
-      return invoke('get_break_schedule');
-    }
-
-    async function bootstrapTimer() {
-      const schedule = await loadScheduleForUi();
-      renderDisableOptions(schedule.disable_options);
-      await syncAndroidAlertCapability();
-      await syncActivitySignals();
-      await syncEngineStatus();
-      startStatusPolling();
-
-      if (isAndroidBridgeAvailable()) {
-        const bridge = await waitForAndroidBridge();
-        ensureAndroidMainScreenChrome();
-        bridge.startBreakService();
-      }
-    }
-
-    // Start service
-    document.getElementById('startService').addEventListener('click', async () => {
-      try {
-        statusEl.textContent = 'Starting service...';
-        ensureAndroidMainScreenChrome();
-
-        if (isAndroidBridgeAvailable()) {
-          const bridge = await waitForAndroidBridge();
-          ensureAndroidMainScreenChrome();
-          console.log("Bridge ping:", bridge.ping?.());
-          const schedule = await loadScheduleForUi();
-          renderDisableOptions(schedule.disable_options);
-          await syncAndroidAlertCapability();
-          await invoke('start_break_timer');
-          await syncActivitySignals();
-          await syncEngineStatus();
-          startStatusPolling();
-          bridge.startBreakService();
-          statusEl.textContent = 'Service started! Break timer running.';
-        } else {
-          const schedule = await loadScheduleForUi();
-          renderDisableOptions(schedule.disable_options);
-          await syncAndroidAlertCapability();
-          await invoke('start_break_timer');
-          await syncActivitySignals();
-          await syncEngineStatus();
-          startStatusPolling();
-        }
-
-        statusEl.style.color = 'green';
-        console.log('Service started successfully');
-      } catch (error) {
-        statusEl.textContent = `Error: ${error}`;
-        statusEl.style.color = 'red';
-        console.error('Failed to start service:', error);
-      }
-    });
-
-    // Stop service
-    document.getElementById('stopService').addEventListener('click', async () => {
-      try {
-        statusEl.textContent = 'Stopping service...';
-        ensureAndroidMainScreenChrome();
-
-        if (isAndroidBridgeAvailable()) {
-          const bridge = await waitForAndroidBridge();
-          stopStatusPolling();
-          await invoke('stop_break_timer');
-          await syncEngineStatus();
-          bridge.stopBreakService();
-          statusEl.textContent = 'Service stopped.';
-        } else {
-          stopStatusPolling();
-          await invoke('stop_break_timer');
-          await syncEngineStatus();
-        }
-
-        statusEl.style.color = 'orange';
-        console.log('Service stopped successfully');
-      } catch (error) {
-        statusEl.textContent = `Error: ${error}`;
-        statusEl.style.color = 'red';
-        console.error('Failed to stop service:', error);
-      }
-    });
-
-    // Test break screen
-    document.getElementById('testBreak').addEventListener('click', async () => {
-      try {
-        statusEl.textContent = 'Showing break screen...';
-        await invoke('show_break_window');
-        breakWindowVisible = true;
-      } catch (error) {
-        statusEl.textContent = `Error: ${error}`;
-        statusEl.style.color = 'red';
-        console.error('Failed to show break:', error);
-      }
-    });
-
-    if (androidBreakSkipBtn) {
-      androidBreakSkipBtn.addEventListener('click', async () => {
-        try {
-          await invoke('skip_break');
-        } catch (error) {
-          console.error('Failed to skip break via overlay:', error);
-        } finally {
-          await syncEngineStatus();
-        }
-      });
-    }
-
-    document.getElementById('openFullScreenAlertSettings')?.addEventListener('click', async () => {
-      try {
-        const bridge = await waitForAndroidBridge();
-        bridge.openFullScreenAlertSettings?.();
-      } catch (error) {
-        console.error('Failed to open full-screen alert settings:', error);
-      }
-    });
-
-    document.getElementById('openNotificationSettings')?.addEventListener('click', async () => {
-      try {
-        const bridge = await waitForAndroidBridge();
-        bridge.openNotificationSettings?.();
-      } catch (error) {
-        console.error('Failed to open notification settings:', error);
-      }
-    });
-
-    document.getElementById('toggleBreakNotifications')?.addEventListener('click', async (event) => {
-      try {
-        const bridge = await waitForAndroidBridge();
-        const button = event.currentTarget;
-        const enabled = bridge.areBreakNotificationsEnabled?.() ?? true;
-        bridge.setBreakNotificationsEnabled?.(!enabled);
-        button.textContent = enabled ? 'Enable Break Notifications' : 'Disable Break Notifications';
-      } catch (error) {
-        console.error('Failed to update break notification setting:', error);
-      }
-    });
-
-    document.getElementById('openOverlaySettings')?.addEventListener('click', async () => {
-      try {
-        const bridge = await waitForAndroidBridge();
-        bridge.openOverlaySettings?.();
-      } catch (error) {
-        console.error('Failed to open overlay settings:', error);
-      }
-    });
-
-    async function initializeApp() {
-      await registerConfigReloadListeners();
-      await bootstrapTimer();
-    }
-
-    initializeApp().catch((error) => {
-      console.error('Failed to bootstrap timer:', error);
-      statusEl.textContent = `Error: ${error}`;
-      statusEl.style.color = 'red';
-    });
-
-    window.addEventListener('focus', ensureAndroidMainScreenChrome);
-    window.addEventListener('pageshow', ensureAndroidMainScreenChrome);
-
-    document.addEventListener('visibilitychange', () => {
-      ensureAndroidMainScreenChrome();
-      syncActivitySignals();
-      syncAndroidAlertCapability();
-    });
-
-    document.addEventListener('fullscreenchange', () => {
-      syncActivitySignals();
-    });
-
-    setInterval(() => {
-      ensureAndroidMainScreenChrome();
-    }, 1000);
+    const theme = document.getElementById('themeSelect');
+    const status = document.getElementById('status');
+    const error = document.getElementById('error');
+    function applyTheme(value) { document.documentElement.dataset.theme = value; theme.value = value; }
+    applyTheme(localStorage.getItem('gazeguard-theme') || 'system');
+    theme.addEventListener('change', () => { localStorage.setItem('gazeguard-theme', theme.value); applyTheme(theme.value); });
+    document.getElementById('testBreak').addEventListener('click', async () => { try { await invoke('show_break_window'); status.textContent = 'Break started'; } catch (e) { error.textContent = e; error.style.display = 'block'; } });
+    document.getElementById('save').addEventListener('click', () => { status.textContent = 'Settings saved'; });
+    invoke('get_engine_status').then(s => { status.textContent = s.phase === 'running' ? 'Running' : 'Ready'; }).catch(() => {});
   </script>
 </body>
 </html>
