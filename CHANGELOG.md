@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/JorgeReus/GazeGuard/compare/v0.2.2...v0.3.0) (2026-08-15)
+
+
+### Features
+
+* added close event handler for minimization ([24966f1](https://github.com/JorgeReus/GazeGuard/commit/24966f1826e6d8cfa7990ef9ecc49cc2a8c3efd3))
+* added theme selector ([03aad06](https://github.com/JorgeReus/GazeGuard/commit/03aad06094c42cce9ae26d0fa4320dc024d972f7))
+
+
+### Bug Fixes
+
+* test break on sys tray behaviour ([4083010](https://github.com/JorgeReus/GazeGuard/commit/40830108ed49594c17d05b22dc8de75281021d88))
+
 ## [0.2.2](https://github.com/JorgeReus/GazeGuard/compare/v0.2.1...v0.2.2) (2026-08-14)
 
 
