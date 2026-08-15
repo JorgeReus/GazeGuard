@@ -940,9 +940,11 @@ fn show_break_window(
 fn open_break_window(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(desktop)]
     {
-        // Check if break window already exists
+        // Reuse existing break window; closing/recreating same label can race.
         if let Some(existing) = app.get_webview_window("break") {
-            existing.close().ok();
+            existing.show().map_err(|e| e.to_string())?;
+            existing.set_focus().map_err(|e| e.to_string())?;
+            return Ok(());
         }
 
         // Try primary monitor first, fallback to first available monitor
