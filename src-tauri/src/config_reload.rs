@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::break_engine::BreakEngineConfig;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
