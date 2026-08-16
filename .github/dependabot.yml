@@ -10,6 +10,10 @@ updates:
       npm-dependencies:
         patterns:
           - "*"
+      npm-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
 
   - package-ecosystem: cargo
     directory: /src-tauri
@@ -18,5 +22,9 @@ updates:
     open-pull-requests-limit: 5
     groups:
       cargo-dependencies:
+        patterns:
+          - "*"
+      cargo-security:
+        applies-to: security-updates
         patterns:
           - "*"
