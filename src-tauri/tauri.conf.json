@@ -4,7 +4,9 @@
   "version": "0.3.0",
   "identifier": "com.reus.gazeguard",
   "build": {
-    "frontendDist": "../src"
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,
