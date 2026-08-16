@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/JorgeReus/GazeGuard/compare/v0.3.0...v0.4.0) (2026-08-16)
+
+
+### Features
+
+* added profiling and logs ([edf1436](https://github.com/JorgeReus/GazeGuard/commit/edf1436e6ee40bdc6ce2cc61bffdfb068bb51fe7))
+
 ## [0.3.0](https://github.com/JorgeReus/GazeGuard/compare/v0.2.2...v0.3.0) (2026-08-15)
 
 
