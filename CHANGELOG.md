@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/JorgeReus/GazeGuard/compare/v0.4.0...v0.4.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* tests for updates ([861f4da](https://github.com/JorgeReus/GazeGuard/commit/861f4da0a6c3d6477b6189731594ae44b2ebd604))
+
 ## [0.4.0](https://github.com/JorgeReus/GazeGuard/compare/v0.3.0...v0.4.0) (2026-08-16)
 
 
