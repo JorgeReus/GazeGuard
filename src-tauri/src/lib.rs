@@ -1033,6 +1033,18 @@ fn stop_cpu_profile(app: tauri::AppHandle) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
+#[cfg(not(desktop))]
+#[tauri::command]
+fn start_cpu_profile() -> Result<(), String> {
+    Err("CPU profiling is only available on desktop".to_string())
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+fn stop_cpu_profile() -> Result<String, String> {
+    Err("CPU profiling is only available on desktop".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(desktop)]
@@ -1175,8 +1187,9 @@ pub fn run() {
             disable_reminders,
             skip_break,
             postpone_break,
-            complete_break
-            , start_cpu_profile, stop_cpu_profile
+            complete_break,
+            start_cpu_profile,
+            stop_cpu_profile
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
