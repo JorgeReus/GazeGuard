@@ -15,6 +15,7 @@ pub fn ensure_config_file(path: &Path, default_yaml: &str) -> Result<PathBuf, St
     Ok(path.to_path_buf())
 }
 
+#[cfg(desktop)]
 pub fn desktop_config_path() -> Result<PathBuf, String> {
     #[cfg(target_os = "windows")]
     {

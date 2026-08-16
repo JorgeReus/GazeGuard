@@ -490,12 +490,14 @@ fn save_registered_engine_snapshot(now_unix_seconds: u64) -> Result<(), String> 
     save_engine_snapshot(&engine, app_data_dir.as_path(), now_unix_seconds)
 }
 
+#[cfg(any(desktop, test))]
 fn format_duration(seconds: u64) -> String {
     let minutes = seconds / 60;
     let secs = seconds % 60;
     format!("{minutes}:{secs:02}")
 }
 
+#[cfg(any(desktop, test))]
 fn format_tray_title(status: &EngineStatus) -> String {
     match status.phase {
         break_engine::EnginePhase::Running | break_engine::EnginePhase::Warning => {
@@ -536,9 +538,6 @@ fn refresh_tray_title(app: &tauri::AppHandle) {
     let _ = tray.set_tooltip(Some(&title));
     let _ = save_registered_engine_snapshot(unix_now_seconds());
 }
-
-#[cfg(not(desktop))]
-fn refresh_tray_title(_app: &tauri::AppHandle) {}
 
 #[cfg(desktop)]
 fn refresh_desktop_signals(app: &tauri::AppHandle, engine: &SharedBreakEngine) {
@@ -642,6 +641,7 @@ fn spawn_config_watcher(
     });
 }
 
+#[cfg(any(desktop, test))]
 fn apply_reloaded_config(
     engine: &SharedBreakEngine,
     config: BreakEngineConfig,
