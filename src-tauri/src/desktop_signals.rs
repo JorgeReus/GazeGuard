@@ -1,6 +1,9 @@
+#![allow(dead_code, clashing_extern_declarations)]
+
 use std::fmt::Arguments;
 
 use crate::logger::{self, LogLevel};
+#[cfg(desktop)]
 use tauri::Manager;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
 
@@ -45,7 +45,7 @@ jobs:
               distribution: temurin
               java-version: '21'
               cache: gradle
-          - uses: android-actions/setup-android@v3
+          - uses: android-actions/setup-android@v4
 
       - name: Install Android SDK
         run: sdkmanager "platforms;android-36" "build-tools;36.1.0" "ndk;29.0.14206865"

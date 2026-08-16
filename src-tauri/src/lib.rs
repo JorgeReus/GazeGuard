@@ -7,16 +7,21 @@ mod desktop_signals;
 mod logger;
 
 use break_engine::{
-    BreakEngine, BreakEngineConfig, BreakEngineSnapshot, BreakInfo, DisableOption, EnginePhase,
+    BreakEngine, BreakEngineConfig, BreakEngineSnapshot, BreakInfo, DisableOption,
     EngineStatus, PostponeOption,
 };
 use serde::Serialize;
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(desktop)]
+use std::sync::Condvar;
+#[cfg(desktop)]
 use std::thread;
+#[cfg(desktop)]
 use std::thread::JoinHandle;
+#[cfg(desktop)]
 use std::time::Duration;
 #[cfg(desktop)]
 use tauri::Emitter;
@@ -98,6 +103,7 @@ struct BreakSchedule {
     postpone_options: Vec<PostponeOption>,
 }
 
+#[cfg(any(target_os = "android", test))]
 #[derive(Debug, Serialize)]
 struct AndroidBreakOverlaySnapshot {
     phase: String,
@@ -143,16 +149,18 @@ fn get_snapshot_app_data_dir() -> Option<PathBuf> {
         .and_then(|slot| slot.clone())
 }
 
-fn engine_phase_label(phase: &EnginePhase) -> &'static str {
+#[cfg(any(target_os = "android", test))]
+fn engine_phase_label(phase: &break_engine::EnginePhase) -> &'static str {
     match phase {
-        EnginePhase::Stopped => "stopped",
-        EnginePhase::Running => "running",
-        EnginePhase::Warning => "warning",
-        EnginePhase::OnBreak => "on_break",
-        EnginePhase::Disabled => "disabled",
+        break_engine::EnginePhase::Stopped => "stopped",
+        break_engine::EnginePhase::Running => "running",
+        break_engine::EnginePhase::Warning => "warning",
+        break_engine::EnginePhase::OnBreak => "on_break",
+        break_engine::EnginePhase::Disabled => "disabled",
     }
 }
 
+#[cfg(any(target_os = "android", test))]
 fn debug_engine_phase_for_android() -> String {
     let Some(engine) = get_shared_break_engine() else {
         return "unavailable".to_string();
@@ -165,6 +173,7 @@ fn debug_engine_phase_for_android() -> String {
         .unwrap_or_else(|| "poisoned".to_string())
 }
 
+#[cfg(any(target_os = "android", test))]
 fn force_break_now_for_android() -> String {
     let Some(engine) = get_shared_break_engine() else {
         return "unavailable".to_string();
@@ -180,6 +189,7 @@ fn force_break_now_for_android() -> String {
         .unwrap_or_else(|| "poisoned".to_string())
 }
 
+#[cfg(any(target_os = "android", test))]
 fn postpone_break_for_android(seconds: u64) -> String {
     let Some(engine) = get_shared_break_engine() else {
         return "unavailable".to_string();
@@ -197,6 +207,7 @@ fn postpone_break_for_android(seconds: u64) -> String {
         .unwrap_or_else(|| "poisoned".to_string())
 }
 
+#[cfg(any(target_os = "android", test))]
 fn break_overlay_snapshot_for_android() -> String {
     let Some(engine) = get_shared_break_engine() else {
         return json!({
@@ -219,12 +230,12 @@ fn break_overlay_snapshot_for_android() -> String {
             let phase = engine_phase_label(&status.phase).to_string();
             let remaining_seconds = status.seconds_remaining.unwrap_or(0);
             let (message, should_show_notification, should_show_overlay) = match status.phase {
-                EnginePhase::Warning => (
+                break_engine::EnginePhase::Warning => (
                     format!("Break starts in {remaining_seconds} seconds"),
                     true,
                     false,
                 ),
-                EnginePhase::OnBreak => (
+                break_engine::EnginePhase::OnBreak => (
                     status
                         .current_break
                         .as_ref()
@@ -303,6 +314,7 @@ fn singleton_test_lock() -> &'static Mutex<()> {
     SINGLETON_TEST_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+#[cfg(test)]
 fn create_break_engine() -> SharedBreakEngine {
     let engine =
         create_break_engine_with_config(BreakEngineConfig::load(), None, unix_now_seconds());
@@ -737,6 +749,9 @@ fn sync_desktop_window_state(
     let configured_log_level = guard.config().log_level;
 
     #[cfg(not(desktop))]
+    let _ = (idle_threshold_seconds, configured_log_level);
+
+    #[cfg(not(desktop))]
     let _ = &app;
 
     #[cfg(desktop)]
@@ -846,53 +861,49 @@ fn postpone_break(
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_reus_gazeguard_RustProbe_debugEnginePhase(
-    mut env: jni::JNIEnv,
+    mut env: jni::EnvUnowned,
     _: jni::objects::JClass,
 ) -> jni::sys::jstring {
     let phase = debug_engine_phase_for_android();
-    env.new_string(phase)
-        .map(|value| value.into_raw())
-        .unwrap_or(std::ptr::null_mut())
+    env.with_env(|env| env.new_string(phase).map(|value| value.into_raw()))
+        .resolve::<jni::errors::LogErrorAndDefault>()
 }
 
 #[cfg(target_os = "android")]
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_reus_gazeguard_RustProbe_forceBreakNow(
-    mut env: jni::JNIEnv,
+    mut env: jni::EnvUnowned,
     _: jni::objects::JClass,
 ) -> jni::sys::jstring {
     let phase = force_break_now_for_android();
-    env.new_string(phase)
-        .map(|value| value.into_raw())
-        .unwrap_or(std::ptr::null_mut())
+    env.with_env(|env| env.new_string(phase).map(|value| value.into_raw()))
+        .resolve::<jni::errors::LogErrorAndDefault>()
 }
 
 #[cfg(target_os = "android")]
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_reus_gazeguard_RustProbe_postponeBreak(
-    mut env: jni::JNIEnv,
+    mut env: jni::EnvUnowned,
     _: jni::objects::JClass,
     seconds: jni::sys::jlong,
 ) -> jni::sys::jstring {
     let phase = postpone_break_for_android(seconds.max(0) as u64);
-    env.new_string(phase)
-        .map(|value| value.into_raw())
-        .unwrap_or(std::ptr::null_mut())
+    env.with_env(|env| env.new_string(phase).map(|value| value.into_raw()))
+        .resolve::<jni::errors::LogErrorAndDefault>()
 }
 
 #[cfg(target_os = "android")]
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_reus_gazeguard_RustProbe_breakOverlaySnapshot(
-    mut env: jni::JNIEnv,
+    mut env: jni::EnvUnowned,
     _: jni::objects::JClass,
 ) -> jni::sys::jstring {
     let snapshot = break_overlay_snapshot_for_android();
-    env.new_string(snapshot)
-        .map(|value| value.into_raw())
-        .unwrap_or(std::ptr::null_mut())
+    env.with_env(|env| env.new_string(snapshot).map(|value| value.into_raw()))
+        .resolve::<jni::errors::LogErrorAndDefault>()
 }
 
 // #[cfg(target_os = "android")]

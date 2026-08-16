@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::logger::LogLevel;
 use serde::{Deserialize, Serialize};
 use std::fs;
