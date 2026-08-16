@@ -33,6 +33,7 @@ jobs:
           workspaces: src-tauri
 
       - run: npm install
+      - run: npm run build
 
       - name: Route generated Android Cargo calls to npm CLI
         run: |
@@ -71,6 +72,7 @@ jobs:
           workspaces: src-tauri
 
       - run: npm install
+      - run: npm run build
 
       - uses: tauri-apps/tauri-action@v1
         with:

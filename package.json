@@ -2,13 +2,19 @@
   "name": "gazeguard",
   "version": "0.3.0",
   "private": true,
+  "type": "module",
   "scripts": {
-    "tauri": "tauri"
-  },
-  "devDependencies": {
-    "@tauri-apps/cli": "2.10.1"
+    "tauri": "tauri",
+    "dev": "vite",
+    "build": "vite build"
   },
   "dependencies": {
-    "@fltsci/tauri-plugin-tracing": "latest"
+    "@fltsci/tauri-plugin-tracing": "latest",
+    "svelte": "^5.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.10.1",
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "vite": "^6.0.3"
   }
 }
