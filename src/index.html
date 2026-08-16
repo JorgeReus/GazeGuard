@@ -42,10 +42,10 @@
     <header><div class="icon">◉</div><h1>Settings</h1><p>Protect your eyes while you work</p></header>
     <main>
       <section><h2>Break schedule</h2>
-        <div class="row"><span>Short break interval</span><span class="unit"><input id="shortInterval" type="number" value="20">m</span></div>
+        <div class="row"><span>Short break interval</span><span class="unit"><input id="shortInterval" type="number" value="20">min</span></div>
         <div class="row"><span>Short break duration</span><span class="unit"><input id="shortDuration" type="number" value="20">s</span></div><div class="divider"></div>
-        <div class="row"><span>Long break interval</span><span class="unit"><input id="longInterval" type="number" value="60">m</span></div>
-        <div class="row"><span>Long break duration</span><span class="unit"><input id="longDuration" type="number" value="5">m</span></div><div class="divider"></div>
+        <div class="row"><span>Long break interval</span><span class="unit"><input id="longInterval" type="number" value="60">min</span></div>
+        <div class="row"><span>Long break duration</span><span class="unit"><input id="longDuration" type="number" value="5">min</span></div><div class="divider"></div>
         <div class="row"><span>Enable notifications</span><input class="toggle" type="checkbox" checked></div>
       </section>
       <section><h2>Break experience</h2>
@@ -57,6 +57,9 @@
       <section><h2>Appearance</h2><div class="row"><label for="themeSelect">Theme</label><select id="themeSelect" class="wide"><option value="system">Match System</option><option value="light">Light</option><option value="dark">Dark</option></select></div></section>
       <section><h2>Behavior</h2>
         <div class="row"><span>Start at login</span><input class="toggle" type="checkbox" checked></div><div class="row"><span>Pause during fullscreen</span><input class="toggle" type="checkbox" checked></div><div class="row"><span>Pause when idle</span><input class="toggle" type="checkbox"></div><div class="row"><span>Keep in menu bar</span><input class="toggle" type="checkbox" checked></div>
+      </section>
+      <section><h2>Developer profiling</h2>
+        <div class="actions"><button id="startProfile">Start CPU Profile</button><button id="stopProfile">Stop CPU Profile</button></div>
       </section>
       <p id="error"></p>
     </main>
@@ -72,6 +75,8 @@
     theme.addEventListener('change', () => { localStorage.setItem('gazeguard-theme', theme.value); applyTheme(theme.value); });
     document.getElementById('testBreak').addEventListener('click', async () => { try { await invoke('show_break_window'); status.textContent = 'Break started'; } catch (e) { error.textContent = e; error.style.display = 'block'; } });
     document.getElementById('save').addEventListener('click', () => { status.textContent = 'Settings saved'; });
+    document.getElementById('startProfile').addEventListener('click', async () => { try { await invoke('start_cpu_profile'); status.textContent = 'CPU profiling'; } catch (e) { error.textContent = e; error.style.display = 'block'; } });
+    document.getElementById('stopProfile').addEventListener('click', async () => { try { const path = await invoke('stop_cpu_profile'); status.textContent = `Profile saved: ${path}`; } catch (e) { error.textContent = e; error.style.display = 'block'; } });
     invoke('get_engine_status').then(s => { status.textContent = s.phase === 'running' ? 'Running' : 'Ready'; }).catch(() => {});
   </script>
 </body>

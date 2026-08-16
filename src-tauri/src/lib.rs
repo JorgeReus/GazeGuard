@@ -22,6 +22,8 @@ use std::time::Duration;
 use tauri::Emitter;
 use tauri::Manager;
 use tauri::State;
+#[cfg(desktop)]
+use tauri_plugin_tracing::TracedProfilingExt;
 
 #[cfg(desktop)]
 use tauri::{
@@ -1017,9 +1019,41 @@ fn close_break_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(desktop)]
+#[tauri::command]
+fn start_cpu_profile(app: tauri::AppHandle) -> Result<(), String> {
+    app.start_cpu_profile_traced().map_err(|error| error.to_string())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+fn stop_cpu_profile(app: tauri::AppHandle) -> Result<String, String> {
+    app.stop_cpu_profile_traced()
+        .map(|profile| profile.flamegraph_path.display().to_string())
+        .map_err(|error| error.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(desktop)]
+    let tracing_level = if cfg!(debug_assertions) {
+        tauri_plugin_tracing::LevelFilter::DEBUG
+    } else {
+        tauri_plugin_tracing::LevelFilter::INFO
+    };
+
     let builder = tauri::Builder::default().plugin(tauri_plugin_shell::init());
+
+    #[cfg(desktop)]
+    let builder = builder.plugin(
+            tauri_plugin_tracing::Builder::new()
+                .with_max_level(tracing_level)
+                .with_file_logging()
+                .with_default_subscriber()
+                .build(),
+        );
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_tracing::init_profiling());
 
     // Add android plugin
     // #[cfg(target_os = "android")]
@@ -1142,6 +1176,7 @@ pub fn run() {
             skip_break,
             postpone_break,
             complete_break
+            , start_cpu_profile, stop_cpu_profile
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
