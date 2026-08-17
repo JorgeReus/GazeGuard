@@ -181,12 +181,43 @@
   let postponeOptions = [];
   let postponeEnabled = false;
   let closing = false;
+  let lastCountdown = null;
+  const soundEnabled = localStorage.getItem('gazeguard-sound-enabled') !== 'false';
+  const startSound = new Audio('/sounds/on_pre_break.wav');
+  const stopSound = new Audio('/sounds/on_stop_break.wav');
+
+  function playSound(audio) {
+    if (!soundEnabled) return Promise.resolve();
+    audio.currentTime = 0;
+    return new Promise((resolve) => {
+      audio.addEventListener('ended', resolve, { once: true });
+      audio.play().catch((error) => {
+        console.warn('GazeGuard sound playback failed', error);
+        resolve();
+      });
+    });
+  }
+
+  function playCountdownBeep() {
+    if (!soundEnabled) return;
+    const context = new AudioContext();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.frequency.value = 880;
+    gain.gain.setValueAtTime(0.12, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.12);
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.12);
+    oscillator.addEventListener('ended', () => context.close());
+  }
 
   document.documentElement.dataset.theme = localStorage.getItem('gazeguard-theme') || 'system';
 
   async function finishBreak(command) {
     if (closing) return;
     closing = true;
+    await playSound(stopSound);
     document.body.classList.add('is-exiting');
     await new Promise((resolve) => setTimeout(resolve, 350));
     await invoke(command);
@@ -289,7 +320,12 @@
   function updateTimer() {
     timerElement.textContent = formatTime(timeLeft);
 
-    if (timeLeft <= 0) {
+    if (timeLeft >= 2 && timeLeft <= 4 && timeLeft !== lastCountdown) {
+      lastCountdown = timeLeft;
+      playCountdownBeep();
+    }
+
+    if (timeLeft <= 1) {
       finishBreak('complete_break').catch(console.error);
       return;
     }
@@ -315,6 +351,7 @@
       : (info.kind === 'long' ? 'Take a Long Break' : 'Take a Short Break');
     setSkipState(Boolean(status?.can_skip), Boolean(status?.skip_limit_reached));
     setPostponeState(Boolean(status?.can_postpone));
+    playSound(startSound);
     updateTimer();
   }
 

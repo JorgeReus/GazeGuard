@@ -57,9 +57,20 @@ impl TrayUpdater {
     }
 
     fn run(app: tauri::AppHandle, engine: SharedBreakEngine, stop: Arc<(Mutex<bool>, Condvar)>) {
+        let mut was_on_break = false;
         loop {
             refresh_desktop_signals(&app, &engine);
             refresh_tray_title(&app);
+
+            let is_on_break = engine
+                .lock()
+                .ok()
+                .map(|mut guard| matches!(guard.status().phase, break_engine::EnginePhase::OnBreak))
+                .unwrap_or(false);
+            if is_on_break && !was_on_break {
+                let _ = open_break_window(app.clone());
+            }
+            was_on_break = is_on_break;
 
             let (lock, wake) = &*stop;
             let stopped = lock
@@ -978,7 +989,7 @@ fn open_break_window(app: tauri::AppHandle) -> Result<(), String> {
         let break_window = tauri::WebviewWindowBuilder::new(
             &app,
             "break",
-            tauri::WebviewUrl::App("break.html".into()),
+            tauri::WebviewUrl::App("src/break.html".into()),
         )
         .title("Take a Break")
         .inner_size(size.width as f64, size.height as f64)
@@ -1000,7 +1011,7 @@ fn open_break_window(app: tauri::AppHandle) -> Result<(), String> {
         // On mobile, navigate the main window to the break page
         if let Some(main_window) = app.get_webview_window("main") {
             main_window
-                .eval("window.location.href = 'break.html';")
+                .eval("window.location.href = 'src/break.html';")
                 .map_err(|e| e.to_string())?;
         }
     }
