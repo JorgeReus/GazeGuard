@@ -44,6 +44,10 @@ fn default_play_sound() -> bool {
     true
 }
 
+fn default_pause_during_fullscreen() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BreakEngineConfig {
     pub break_interval: u64,
@@ -60,6 +64,9 @@ pub struct BreakEngineConfig {
     pub strict_break: bool,
     pub consecutive_skip_limit: u8,
     pub idle_time: u64,
+    pub start_at_login: bool,
+    pub pause_during_fullscreen: bool,
+    pub pause_when_idle: bool,
     pub log_level: LogLevel,
     pub short_breaks: Vec<BreakTemplate>,
     pub long_breaks: Vec<BreakTemplate>,
@@ -97,6 +104,12 @@ struct RawBreakEngineConfig {
     #[serde(default)]
     idle_time: u64,
     #[serde(default)]
+    start_at_login: bool,
+    #[serde(default = "default_pause_during_fullscreen")]
+    pause_during_fullscreen: bool,
+    #[serde(default)]
+    pause_when_idle: bool,
+    #[serde(default)]
     short_breaks: Vec<BreakTemplate>,
     #[serde(default)]
     long_breaks: Vec<BreakTemplate>,
@@ -126,6 +139,9 @@ impl Default for RawBreakEngineConfig {
             strict_break: false,
             consecutive_skip_limit: 2,
             idle_time: 5,
+            start_at_login: false,
+            pause_during_fullscreen: true,
+            pause_when_idle: false,
             short_breaks: vec![
                 BreakTemplate { name: "Gently close your eyes".to_string() },
                 BreakTemplate { name: "Roll your eyes a few times to each side".to_string() },
@@ -214,6 +230,9 @@ impl BreakEngineConfig {
             strict_break: raw.strict_break,
             consecutive_skip_limit: raw.consecutive_skip_limit,
             idle_time: raw.idle_time,
+            start_at_login: raw.start_at_login,
+            pause_during_fullscreen: raw.pause_during_fullscreen,
+            pause_when_idle: raw.pause_when_idle,
             log_level: LogLevel::parse(raw.log_level.as_deref()),
             short_breaks: raw.short_breaks,
             long_breaks: raw.long_breaks,
@@ -1131,6 +1150,9 @@ mod tests {
         assert!(config.persist_state);
         assert_eq!(config.short_breaks[0].name, "Gently close your eyes");
         assert_eq!(config.long_breaks[0].name, "Walk for a while");
+        assert!(!config.start_at_login);
+        assert!(config.pause_during_fullscreen);
+        assert!(!config.pause_when_idle);
     }
 
     #[test]
