@@ -363,7 +363,7 @@ fn load_runtime_break_engine_config(app_data_dir: &Path) -> Result<BreakEngineCo
             BreakEngineConfig::load_or_create_from_path(&config_path, &defaults)
         }
     }?;
-    tauri_plugin_tracing::tracing::info!(?config, "Loaded break settings");
+    tauri_plugin_tracing::tracing::debug!(?config, "Loaded break settings");
     Ok(config)
 }
 
@@ -400,21 +400,31 @@ fn get_settings() -> Result<serde_json::Value, String> {
     let current: serde_yaml::Value = serde_yaml::from_str(&contents)
         .map_err(|error| error.to_string())?;
     let mut defaults = serde_json::to_value(defaults).map_err(|error| error.to_string())?;
-    let current = serde_json::to_value(current).map_err(|error| error.to_string())?;
+    let mut current = serde_json::to_value(current).map_err(|error| error.to_string())?;
+    normalize_settings(&mut current);
     if let (Some(defaults), Some(current)) = (defaults.as_object_mut(), current.as_object()) {
         defaults.extend(current.clone());
     }
     Ok(defaults)
 }
 
+fn normalize_settings(settings: &mut serde_json::Value) {
+    if let Some(settings) = settings.as_object_mut() {
+        if settings.get("log_level").map_or(true, serde_json::Value::is_null) {
+            settings.insert("log_level".to_string(), serde_json::Value::String("info".to_string()));
+        }
+    }
+}
+
 #[tauri::command]
 fn update_settings(
     state: State<'_, SharedBreakEngine>,
-    settings: serde_json::Value,
+    mut settings: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let app_data_dir = get_snapshot_app_data_dir()
         .ok_or_else(|| "App data dir unavailable".to_string())?;
     let path = runtime_config_path(app_data_dir.as_path())?;
+    normalize_settings(&mut settings);
     let yaml = serde_yaml::to_string(&settings).map_err(|error| error.to_string())?;
     BreakEngineConfig::validate_yaml(&yaml)?;
     let temporary = path.with_extension("yaml.tmp");
@@ -1113,11 +1123,7 @@ fn stop_cpu_profile() -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(desktop)]
-    let tracing_level = if cfg!(debug_assertions) {
-        tauri_plugin_tracing::LevelFilter::DEBUG
-    } else {
-        tauri_plugin_tracing::LevelFilter::INFO
-    };
+    let tracing_level = tauri_plugin_tracing::LevelFilter::INFO;
 
     let builder = tauri::Builder::default().plugin(tauri_plugin_shell::init());
 
@@ -1278,7 +1284,7 @@ mod tests {
         apply_desktop_signals_to_engine, apply_reloaded_config, break_overlay_snapshot_for_android,
         create_break_engine, create_break_engine_for_tests, debug_engine_phase_for_android,
         force_break_now_for_android, format_tray_title, reload_runtime_config_for_tests,
-        save_engine_snapshot, save_registered_engine_snapshot, set_shared_break_engine_for_tests,
+        normalize_settings, save_engine_snapshot, save_registered_engine_snapshot, set_shared_break_engine_for_tests,
         set_snapshot_app_data_dir_for_tests, singleton_test_lock, SharedBreakEngine,
         SNAPSHOT_FILE_NAME,
     };
@@ -1289,6 +1295,7 @@ mod tests {
     use std::ffi::OsString;
     use std::fs;
     use std::path::PathBuf;
+    use serde_json::json;
     use std::sync::{Arc, Mutex, MutexGuard};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1685,5 +1692,12 @@ mod tests {
         let guard = engine.lock().unwrap();
         assert_eq!(guard.config().break_interval, 15);
         assert_eq!(guard.config().pre_break_warning_time, 10);
+    }
+
+    #[test]
+    fn null_log_level_defaults_to_info() {
+        let mut settings = json!({ "log_level": null });
+        normalize_settings(&mut settings);
+        assert_eq!(settings["log_level"], "info");
     }
 }
