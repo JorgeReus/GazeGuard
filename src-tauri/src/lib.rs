@@ -798,8 +798,8 @@ fn apply_desktop_signals_to_engine(
     engine: &mut BreakEngine,
     signals: crate::desktop_signals::DesktopSignals,
 ) -> EngineStatus {
-    engine.set_idle(signals.idle_active);
-    engine.set_fullscreen(signals.fullscreen_active);
+    engine.set_idle(engine.config().pause_when_idle && signals.idle_active);
+    engine.set_fullscreen(engine.config().pause_during_fullscreen && signals.fullscreen_active);
     engine.status()
 }
 
@@ -1394,7 +1394,9 @@ mod tests {
 
     #[test]
     fn apply_desktop_signals_updates_engine_idle_and_fullscreen_state() {
-        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        let mut config = BreakEngineConfig::load();
+        config.pause_when_idle = true;
+        let mut engine = BreakEngine::new(config);
         engine.start();
 
         let status = apply_desktop_signals_to_engine(
@@ -1409,6 +1411,26 @@ mod tests {
         let snapshot = engine.snapshot(0);
         assert!(snapshot.idle_active);
         assert!(snapshot.fullscreen);
+    }
+
+    #[test]
+    fn behavior_pause_settings_gate_desktop_signals() {
+        let mut config = BreakEngineConfig::load();
+        config.pause_during_fullscreen = false;
+        config.pause_when_idle = false;
+        let mut engine = BreakEngine::new(config);
+
+        apply_desktop_signals_to_engine(
+            &mut engine,
+            crate::desktop_signals::DesktopSignals {
+                fullscreen_active: true,
+                idle_active: true,
+            },
+        );
+
+        let snapshot = engine.snapshot(0);
+        assert!(!snapshot.fullscreen);
+        assert!(!snapshot.idle_active);
     }
 
     #[test]
