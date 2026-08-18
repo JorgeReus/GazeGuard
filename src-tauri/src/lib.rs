@@ -446,6 +446,12 @@ fn normalize_settings(settings: &mut serde_json::Value) {
     }
 }
 
+fn start_at_login_from_yaml(yaml: &str) -> Result<bool, String> {
+    BreakEngineConfig::from_yaml(yaml)
+        .map(|config| config.start_at_login)
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn update_settings(
     app: tauri::AppHandle,
@@ -457,11 +463,7 @@ fn update_settings(
     let path = runtime_config_path(app_data_dir.as_path())?;
     normalize_settings(&mut settings);
     let yaml = serde_yaml::to_string(&settings).map_err(|error| error.to_string())?;
-    BreakEngineConfig::validate_yaml(&yaml)?;
-    let start_at_login = settings
-        .get("start_at_login")
-        .and_then(serde_json::Value::as_bool)
-        .ok_or("start_at_login must be a boolean")?;
+    let start_at_login = start_at_login_from_yaml(&yaml)?;
     sync_autostart(&app, start_at_login)?;
     let temporary = path.with_extension("yaml.tmp");
     fs::write(&temporary, &yaml).map_err(|error| error.to_string())?;
@@ -1194,6 +1196,13 @@ pub fn run() {
                 load_runtime_break_engine_config(app_data_dir.as_path()).map_err(|error| {
                     tauri::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, error))
                 })?;
+            if let Err(error) = sync_autostart(&app.handle(), initial_config.start_at_login) {
+                tauri_plugin_tracing::tracing::error!(
+                    start_at_login = initial_config.start_at_login,
+                    %error,
+                    "Failed to synchronize autostart setting"
+                );
+            }
             let engine = create_break_engine_with_config(
                 initial_config.clone(),
                 Some(app_data_dir.as_path()),
@@ -1265,20 +1274,6 @@ pub fn run() {
                 refresh_tray_title(app.handle());
                 app.manage(TrayUpdater::start(app.handle().clone(), engine.clone()));
 
-                // Hide the main window on startup (tray only mode)
-                if let Some(window) = app.get_webview_window("main") {
-                    #[cfg(target_os = "macos")]
-                    {
-                        let window_to_hide = window.clone();
-                        window.on_window_event(move |event| {
-                            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                                api.prevent_close();
-                                let _ = window_to_hide.hide();
-                            }
-                        });
-                    }
-                    let _ = window.hide();
-                }
             }
 
             Ok(())
@@ -1416,6 +1411,19 @@ mod tests {
     fn autostart_action_matches_start_at_login_setting() {
         assert_eq!(autostart_action(true), AutostartAction::Enable);
         assert_eq!(autostart_action(false), AutostartAction::Disable);
+    }
+
+    #[test]
+    fn missing_start_at_login_defaults_to_false() {
+        let mut settings: serde_yaml::Value =
+            serde_yaml::from_str(&BreakEngineConfig::defaults_yaml()).unwrap();
+        settings
+            .as_mapping_mut()
+            .unwrap()
+            .remove(serde_yaml::Value::String("start_at_login".to_string()));
+        let yaml = serde_yaml::to_string(&settings).unwrap();
+
+        assert!(!crate::start_at_login_from_yaml(&yaml).unwrap());
     }
 
     fn unique_test_dir(name: &str) -> TestDir {

@@ -193,7 +193,7 @@ impl BreakEngineConfig {
         Self::from_yaml(&yaml).map_err(|error| error.to_string())
     }
 
-    fn from_yaml(yaml: &str) -> Result<Self, serde_yaml::Error> {
+    pub(crate) fn from_yaml(yaml: &str) -> Result<Self, serde_yaml::Error> {
         let raw: RawBreakEngineConfig = serde_yaml::from_str(yaml)?;
         Ok(Self::from_raw(raw))
     }
