@@ -7,7 +7,7 @@ mod desktop_signals;
 mod logger;
 
 use break_engine::{
-    BreakEngine, BreakEngineConfig, BreakEngineSnapshot, BreakInfo, DisableOption,
+    BreakEngine, BreakEngineConfig, BreakEngineSnapshot, BreakInfo,
     EngineStatus, PostponeOption,
 };
 use serde::Serialize;
@@ -62,12 +62,13 @@ impl TrayUpdater {
             refresh_desktop_signals(&app, &engine);
             refresh_tray_title(&app);
 
-            let is_on_break = engine
-                .lock()
-                .ok()
-                .map(|mut guard| matches!(guard.status().phase, break_engine::EnginePhase::OnBreak))
+            let break_status = engine.lock().ok().map(|mut guard| guard.status());
+            let is_on_break = break_status
+                .as_ref()
+                .map(|status| matches!(status.phase, break_engine::EnginePhase::OnBreak))
                 .unwrap_or(false);
             if is_on_break && !was_on_break {
+                tauri_plugin_tracing::tracing::debug!(?break_status, "Opening break window");
                 let _ = open_break_window(app.clone());
             }
             was_on_break = is_on_break;
@@ -110,7 +111,6 @@ const SNAPSHOT_FILE_NAME: &str = "break-engine-snapshot.json";
 struct BreakSchedule {
     break_interval_minutes: u64,
     pre_break_warning_seconds: u64,
-    disable_options: Vec<DisableOption>,
     postpone_options: Vec<PostponeOption>,
 }
 
@@ -352,10 +352,19 @@ fn runtime_config_path(app_data_dir: &Path) -> Result<PathBuf, String> {
 
 fn load_runtime_break_engine_config(app_data_dir: &Path) -> Result<BreakEngineConfig, String> {
     let config_path = runtime_config_path(app_data_dir)?;
-    BreakEngineConfig::load_or_create_from_path(
+    let defaults = BreakEngineConfig::defaults_yaml();
+    let config = match BreakEngineConfig::load_or_create_from_path(
         &config_path,
-        include_str!("../config/defaults.yaml"),
-    )
+        &defaults,
+    ) {
+        Ok(config) => Ok(config),
+        Err(_) => {
+            fs::write(&config_path, &defaults).map_err(|error| error.to_string())?;
+            BreakEngineConfig::load_or_create_from_path(&config_path, &defaults)
+        }
+    }?;
+    tauri_plugin_tracing::tracing::info!(?config, "Loaded break settings");
+    Ok(config)
 }
 
 fn reload_runtime_config_into_engine(
@@ -364,13 +373,12 @@ fn reload_runtime_config_into_engine(
 ) -> Result<BreakSchedule, String> {
     let config = BreakEngineConfig::load_or_create_from_path(
         config_path,
-        include_str!("../config/defaults.yaml"),
+        &BreakEngineConfig::defaults_yaml(),
     )?;
 
     let schedule = BreakSchedule {
         break_interval_minutes: config.break_interval,
         pre_break_warning_seconds: config.pre_break_warning_time,
-        disable_options: config.disable_options.clone(),
         postpone_options: config.postpone_options.clone(),
     };
 
@@ -379,6 +387,41 @@ fn reload_runtime_config_into_engine(
         .map_err(|_| "State lock poisoned".to_string())?;
     guard.apply_config(config);
     Ok(schedule)
+}
+
+#[tauri::command]
+fn get_settings() -> Result<serde_json::Value, String> {
+    let app_data_dir = get_snapshot_app_data_dir()
+        .ok_or_else(|| "App data dir unavailable".to_string())?;
+    let path = runtime_config_path(app_data_dir.as_path())?;
+    let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let defaults: serde_yaml::Value = serde_yaml::from_str(&BreakEngineConfig::defaults_yaml())
+        .map_err(|error| error.to_string())?;
+    let current: serde_yaml::Value = serde_yaml::from_str(&contents)
+        .map_err(|error| error.to_string())?;
+    let mut defaults = serde_json::to_value(defaults).map_err(|error| error.to_string())?;
+    let current = serde_json::to_value(current).map_err(|error| error.to_string())?;
+    if let (Some(defaults), Some(current)) = (defaults.as_object_mut(), current.as_object()) {
+        defaults.extend(current.clone());
+    }
+    Ok(defaults)
+}
+
+#[tauri::command]
+fn update_settings(
+    state: State<'_, SharedBreakEngine>,
+    settings: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let app_data_dir = get_snapshot_app_data_dir()
+        .ok_or_else(|| "App data dir unavailable".to_string())?;
+    let path = runtime_config_path(app_data_dir.as_path())?;
+    let yaml = serde_yaml::to_string(&settings).map_err(|error| error.to_string())?;
+    BreakEngineConfig::validate_yaml(&yaml)?;
+    let temporary = path.with_extension("yaml.tmp");
+    fs::write(&temporary, &yaml).map_err(|error| error.to_string())?;
+    fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
+    reload_runtime_config_into_engine(&state.inner().clone(), &path)?;
+    serde_json::to_value(settings).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -615,7 +658,7 @@ fn spawn_config_watcher(
 
             let result = BreakEngineConfig::load_or_create_from_path(
                 &config_path,
-                include_str!("../config/defaults.yaml"),
+                &BreakEngineConfig::defaults_yaml(),
             );
             let reload = state.finish_reload(result);
             last_seen = crate::config_reload::refreshed_tracked_mtime(&config_path, current);
@@ -680,6 +723,7 @@ fn stop_break_timer(state: State<'_, SharedBreakEngine>) -> Result<EngineStatus,
 fn get_engine_status(state: State<'_, SharedBreakEngine>) -> Result<EngineStatus, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
     let status = guard.status();
+    tauri_plugin_tracing::tracing::debug!(?status, "Engine status requested");
     drop(guard);
     let _ = save_registered_engine_snapshot(unix_now_seconds());
     Ok(status)
@@ -692,7 +736,6 @@ fn get_break_schedule(state: State<'_, SharedBreakEngine>) -> Result<BreakSchedu
     Ok(BreakSchedule {
         break_interval_minutes: config.break_interval,
         pre_break_warning_seconds: config.pre_break_warning_time,
-        disable_options: config.disable_options.clone(),
         postpone_options: config.postpone_options.clone(),
     })
 }
@@ -1202,6 +1245,8 @@ pub fn run() {
             get_engine_status,
             get_break_schedule,
             reload_runtime_config,
+            get_settings,
+            update_settings,
             get_current_break_info,
             set_idle_active,
             set_fullscreen_active,
@@ -1401,7 +1446,6 @@ mod tests {
             current_break: None,
             can_skip: true,
             can_postpone: false,
-            disable_options: Vec::new(),
         });
 
         assert_eq!(title, "14:32 short");
