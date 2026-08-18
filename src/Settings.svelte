@@ -8,7 +8,8 @@
   let theme: Theme = 'system';
   let status = 'Ready';
   let error = '';
-  let soundEnabled = true;
+  let soundEnabled = false;
+  let settings: Record<string, any> = {};
 
   const toggles = [
     ['Enable notifications', true], ['Eye exercises', true], ['Animate guidance', true],
@@ -38,19 +39,27 @@
 
   function setSoundEnabled(event: Event) {
     soundEnabled = (event.currentTarget as HTMLInputElement).checked;
-    localStorage.setItem('gazeguard-sound-enabled', String(soundEnabled));
+    updateSetting('play_sound', soundEnabled);
   }
 
   onMount(async () => {
     applyTheme((localStorage.getItem('gazeguard-theme') as Theme) || 'system');
-    soundEnabled = localStorage.getItem('gazeguard-sound-enabled') !== 'false';
     if (invoke) {
       try {
+        settings = await invoke('get_settings') as Record<string, any>;
+        soundEnabled = settings.play_sound !== false;
         const engine = await invoke('get_engine_status') as { phase?: string };
         status = engine.phase === 'running' ? 'Running' : 'Ready';
-      } catch { status = 'Ready'; }
+      } catch { soundEnabled = false; status = 'Ready'; }
     }
   });
+
+  async function updateSetting(key: string, value: unknown) {
+    if (!invoke) return;
+    settings = { ...settings, [key]: value };
+    try { await invoke('update_settings', { settings }); }
+    catch (e) { error = String(e); }
+  }
 </script>
 
 <svelte:head><title>GazeGuard Settings</title></svelte:head>
@@ -59,15 +68,15 @@
   <header><div class="icon" aria-hidden="true">◉</div><h1>Settings</h1><p>Protect your eyes while you work</p></header>
   <main>
     <section><h2>Break schedule</h2>
-      <label class="row">Short break interval <span><input type="number" value="20" aria-label="Short break interval"> min</span></label>
-      <label class="row">Short break duration <span><input type="number" value="20" aria-label="Short break duration"> s</span></label>
+      <label class="row">Short break interval <span><input type="number" value={settings.short_break_interval ?? ''} onchange={(e) => updateSetting('short_break_interval', Number((e.currentTarget as HTMLInputElement).value))} aria-label="Short break interval"> min</span></label>
+      <label class="row">Short break duration <span><input type="number" value={settings.short_break_duration ?? ''} onchange={(e) => updateSetting('short_break_duration', Number((e.currentTarget as HTMLInputElement).value))} aria-label="Short break duration"> s</span></label>
       <div class="divider"></div>
-      <label class="row">Long break interval <span><input type="number" value="60" aria-label="Long break interval"> min</span></label>
-      <label class="row">Long break duration <span><input type="number" value="5" aria-label="Long break duration"> min</span></label>
+      <label class="row">Long break interval <span><input type="number" value={settings.long_break_interval ?? ''} onchange={(e) => updateSetting('long_break_interval', Number((e.currentTarget as HTMLInputElement).value))} aria-label="Long break interval"> min</span></label>
+      <label class="row">Long break duration <span><input type="number" value={settings.long_break_duration ?? ''} onchange={(e) => updateSetting('long_break_duration', Number((e.currentTarget as HTMLInputElement).value))} aria-label="Long break duration"> min</span></label>
     </section>
     <section><h2>Break experience</h2>
       {#each toggles.slice(1, 4) as [label, checked]}
-        <label class="row">{label}<input class="toggle" type="checkbox" {checked} aria-label={label}></label>
+        <label class="row">{label}<input class="toggle" type="checkbox" checked={label === 'Play sound (start/end)' ? soundEnabled : checked} onchange={label === 'Play sound (start/end)' ? setSoundEnabled : undefined} aria-label={label}></label>
       {/each}
       <label class="row column">Exercise style<select><option>Automatic</option><option>Blinking</option><option>Gaze movement</option><option>Relaxation</option></select></label>
     </section>

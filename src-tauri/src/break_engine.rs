@@ -21,24 +21,6 @@ pub struct BreakTemplate {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct DisableOption {
-    pub label: String,
-    pub time: u64,
-    pub unit: String,
-}
-
-impl DisableOption {
-    #[cfg(test)]
-    pub fn seconds(&self) -> u64 {
-        match self.unit.as_str() {
-            "hour" => self.time.saturating_mul(60 * 60),
-            _ => self.time.saturating_mul(60),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub struct PostponeOption {
     pub duration: u64,
     pub unit: String,
@@ -58,6 +40,10 @@ fn default_postpone_unit() -> String {
     "minutes".to_string()
 }
 
+fn default_play_sound() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BreakEngineConfig {
     pub break_interval: u64,
@@ -68,6 +54,7 @@ pub struct BreakEngineConfig {
     pub persist_state: bool,
     pub random_order: bool,
     pub allow_postpone: bool,
+    pub play_sound: bool,
     pub postpone_duration_seconds: u64,
     pub postpone_options: Vec<PostponeOption>,
     pub strict_break: bool,
@@ -76,11 +63,10 @@ pub struct BreakEngineConfig {
     pub log_level: LogLevel,
     pub short_breaks: Vec<BreakTemplate>,
     pub long_breaks: Vec<BreakTemplate>,
-    pub disable_options: Vec<DisableOption>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 struct RawBreakEngineConfig {
     #[serde(default)]
     meta: Option<RawConfigMeta>,
@@ -90,6 +76,8 @@ struct RawBreakEngineConfig {
     random_order: bool,
     #[serde(default)]
     allow_postpone: bool,
+    #[serde(default = "default_play_sound")]
+    play_sound: bool,
     #[serde(default)]
     persist_state: bool,
     #[serde(default = "default_postpone_duration")]
@@ -112,23 +100,75 @@ struct RawBreakEngineConfig {
     short_breaks: Vec<BreakTemplate>,
     #[serde(default)]
     long_breaks: Vec<BreakTemplate>,
-    #[serde(default)]
-    disable_options: Vec<DisableOption>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+impl Default for RawBreakEngineConfig {
+    fn default() -> Self {
+        Self {
+            meta: Some(RawConfigMeta { config_version: Some("6.0.4".to_string()) }),
+            log_level: Some("info".to_string()),
+            random_order: true,
+            allow_postpone: true,
+            play_sound: true,
+            persist_state: true,
+            postpone_duration: 5,
+            postpone_unit: "minutes".to_string(),
+            postpone_options: vec![
+                PostponeOption { duration: 5, unit: "minutes".to_string(), seconds: 0 },
+                PostponeOption { duration: 10, unit: "minutes".to_string(), seconds: 0 },
+                PostponeOption { duration: 15, unit: "minutes".to_string(), seconds: 0 },
+            ],
+            short_break_interval: 15,
+            long_break_interval: 75,
+            long_break_duration: 60,
+            pre_break_warning_time: 10,
+            short_break_duration: 15,
+            strict_break: false,
+            consecutive_skip_limit: 2,
+            idle_time: 5,
+            short_breaks: vec![
+                BreakTemplate { name: "Gently close your eyes".to_string() },
+                BreakTemplate { name: "Roll your eyes a few times to each side".to_string() },
+                BreakTemplate { name: "Rotate your eyes in clockwise direction".to_string() },
+                BreakTemplate { name: "Rotate your eyes in counterclockwise direction".to_string() },
+                BreakTemplate { name: "Blink your eyes".to_string() },
+                BreakTemplate { name: "Focus on a point in the far distance".to_string() },
+                BreakTemplate { name: "Have some water".to_string() },
+            ],
+            long_breaks: vec![
+                BreakTemplate { name: "Walk for a while".to_string() },
+                BreakTemplate { name: "Lean back at your seat and relax".to_string() },
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 struct RawConfigMeta {
     #[serde(default)]
     config_version: Option<String>,
 }
 
 impl BreakEngineConfig {
+    pub fn defaults() -> Self {
+        Self::from_raw(RawBreakEngineConfig::default())
+    }
+
+    pub fn defaults_yaml() -> String {
+        serde_yaml::to_string(&RawBreakEngineConfig::default())
+            .expect("default settings must serialize")
+    }
+
+    pub fn validate_yaml(yaml: &str) -> Result<(), String> {
+        Self::from_yaml(yaml).map(|_| ()).map_err(|error| error.to_string())
+    }
+
     pub fn load() -> Self {
         Self::load_from_embedded_defaults().expect("defaults config should be valid YAML")
     }
 
     pub fn load_from_embedded_defaults() -> Result<Self, serde_yaml::Error> {
-        Self::from_yaml(include_str!("../config/defaults.yaml"))
+        Ok(Self::defaults())
     }
 
     pub fn load_or_create_from_path(path: &Path, default_yaml: &str) -> Result<Self, String> {
@@ -154,13 +194,14 @@ impl BreakEngineConfig {
 
         Self {
             break_interval: raw.short_break_interval,
-            long_break_duration: raw.long_break_duration,
+            long_break_duration: raw.long_break_duration.saturating_mul(60),
             no_of_short_breaks_per_long_break: breaks_per_long,
             pre_break_warning_time: raw.pre_break_warning_time,
             short_break_duration: raw.short_break_duration,
             persist_state: raw.persist_state,
             random_order: raw.random_order,
             allow_postpone: raw.allow_postpone,
+            play_sound: raw.play_sound,
             postpone_duration_seconds: postpone_seconds(raw.postpone_duration, &raw.postpone_unit),
             postpone_options: raw
                 .postpone_options
@@ -176,7 +217,6 @@ impl BreakEngineConfig {
             log_level: LogLevel::parse(raw.log_level.as_deref()),
             short_breaks: raw.short_breaks,
             long_breaks: raw.long_breaks,
-            disable_options: raw.disable_options,
         }
     }
 }
@@ -211,7 +251,6 @@ pub struct EngineStatus {
     pub can_skip: bool,
     pub can_postpone: bool,
     pub skip_limit_reached: bool,
-    pub disable_options: Vec<DisableOption>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -356,7 +395,6 @@ impl BreakEngine {
             can_skip: self.current_break.is_some() && skip_allowed,
             can_postpone: self.current_break.is_some() && self.config.allow_postpone,
             skip_limit_reached,
-            disable_options: self.config.disable_options.clone(),
         }
     }
 
@@ -1077,10 +1115,10 @@ mod tests {
         assert_eq!(config.break_interval, 15);
         assert_eq!(config.pre_break_warning_time, 10);
         assert_eq!(config.short_break_duration, 15);
-        assert_eq!(config.long_break_duration, 60);
+        assert_eq!(config.long_break_duration, 60 * 60);
         assert_eq!(config.no_of_short_breaks_per_long_break, 4);
         assert_eq!(config.idle_time, 5);
-        assert_eq!(config.log_level, crate::logger::LogLevel::Off);
+        assert_eq!(config.log_level, crate::logger::LogLevel::Info);
         assert!(!config.strict_break);
         assert!(config.allow_postpone);
         assert_eq!(config.postpone_duration_seconds, 5 * 60);
@@ -1090,9 +1128,7 @@ mod tests {
         assert_eq!(config.postpone_options[2].seconds, 15 * 60);
         assert_eq!(config.short_breaks.len(), 7);
         assert_eq!(config.long_breaks.len(), 2);
-        assert_eq!(config.disable_options.len(), 4);
         assert!(config.persist_state);
-        assert_eq!(config.disable_options[0].seconds(), 30 * 60);
         assert_eq!(config.short_breaks[0].name, "Gently close your eyes");
         assert_eq!(config.long_breaks[0].name, "Walk for a while");
     }
@@ -1106,6 +1142,7 @@ mod tests {
         let config = BreakEngineConfig::load_or_create_from_path(&config_path, yaml).unwrap();
 
         assert_eq!(config.break_interval, 7);
+        assert_eq!(config.long_break_duration, 60 * 60);
         assert_eq!(fs::read_to_string(&config_path).unwrap(), yaml);
     }
 
@@ -1291,19 +1328,6 @@ postpone_options:
 strict_break: false
 consecutive_skip_limit: 2
 idle_time: 5
-disable_options:
-  - label: for_x_minutes
-    time: 30
-    unit: minute
-  - label: for_x_hour
-    time: 1
-    unit: hour
-  - label: for_x_hours
-    time: 2
-    unit: hour
-  - label: for_x_hours
-    time: 3
-    unit: hour
 short_breaks:
   - name: Gently close your eyes
 long_breaks:
@@ -1316,7 +1340,7 @@ long_breaks:
     }
 
     #[test]
-    fn config_defaults_log_level_to_off() {
+    fn config_defaults_log_level_to_info() {
         let yaml = r#"
 short_break_interval: 15
 long_break_interval: 75
@@ -1328,7 +1352,7 @@ strict_break: false
 
         let config = BreakEngineConfig::from_yaml(yaml).unwrap();
 
-        assert_eq!(config.log_level, crate::logger::LogLevel::Off);
+        assert_eq!(config.log_level, crate::logger::LogLevel::Info);
     }
 
     #[test]
@@ -2375,7 +2399,7 @@ consecutive_skip_limit: 2
     }
 
     #[test]
-    fn disable_options_pause_engine_until_window_expires() {
+    fn disabling_pauses_engine_until_window_expires() {
         let mut engine = BreakEngine::new(BreakEngineConfig::load());
         engine.start();
         engine.disable_for(30 * 60).unwrap();

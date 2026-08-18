@@ -24,7 +24,7 @@ pub enum LogLevel {
 impl LogLevel {
     pub fn parse(raw: Option<&str>) -> Self {
         let Some(raw) = raw.map(str::trim) else {
-            return Self::Off;
+            return Self::Info;
         };
 
         if raw.eq_ignore_ascii_case("off") {
@@ -129,8 +129,8 @@ mod tests {
     }
 
     #[test]
-    fn missing_or_invalid_log_level_defaults_to_off() {
-        assert_eq!(LogLevel::parse(None), LogLevel::Off);
+    fn missing_log_level_defaults_to_info() {
+        assert_eq!(LogLevel::parse(None), LogLevel::Info);
         assert_eq!(LogLevel::parse(Some("")), LogLevel::Off);
         assert_eq!(LogLevel::parse(Some("verbose")), LogLevel::Off);
     }
