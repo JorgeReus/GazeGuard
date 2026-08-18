@@ -10,6 +10,7 @@
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:event:default",
+    "autostart:default",
     "shell:allow-open"
   ]
 }

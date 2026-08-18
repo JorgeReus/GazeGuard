@@ -29,6 +29,8 @@ use tauri::Manager;
 use tauri::State;
 #[cfg(desktop)]
 use tauri_plugin_tracing::TracedProfilingExt;
+#[cfg(desktop)]
+use tauri_plugin_autostart::ManagerExt;
 
 #[cfg(desktop)]
 use tauri::{
@@ -37,6 +39,34 @@ use tauri::{
 };
 
 type SharedBreakEngine = Arc<Mutex<BreakEngine>>;
+
+#[derive(Debug, PartialEq, Eq)]
+enum AutostartAction {
+    Enable,
+    Disable,
+}
+
+fn autostart_action(enabled: bool) -> AutostartAction {
+    if enabled {
+        AutostartAction::Enable
+    } else {
+        AutostartAction::Disable
+    }
+}
+
+#[cfg(desktop)]
+fn sync_autostart(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    match autostart_action(enabled) {
+        AutostartAction::Enable => app.autolaunch().enable(),
+        AutostartAction::Disable => app.autolaunch().disable(),
+    }
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(not(desktop))]
+fn sync_autostart(_: &tauri::AppHandle, _: bool) -> Result<(), String> {
+    Ok(())
+}
 
 #[cfg(desktop)]
 struct TrayUpdater {
@@ -418,6 +448,7 @@ fn normalize_settings(settings: &mut serde_json::Value) {
 
 #[tauri::command]
 fn update_settings(
+    app: tauri::AppHandle,
     state: State<'_, SharedBreakEngine>,
     mut settings: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -427,6 +458,11 @@ fn update_settings(
     normalize_settings(&mut settings);
     let yaml = serde_yaml::to_string(&settings).map_err(|error| error.to_string())?;
     BreakEngineConfig::validate_yaml(&yaml)?;
+    let start_at_login = settings
+        .get("start_at_login")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or("start_at_login must be a boolean")?;
+    sync_autostart(&app, start_at_login)?;
     let temporary = path.with_extension("yaml.tmp");
     fs::write(&temporary, &yaml).map_err(|error| error.to_string())?;
     fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
@@ -1128,6 +1164,12 @@ pub fn run() {
     let builder = tauri::Builder::default().plugin(tauri_plugin_shell::init());
 
     #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_autostart::init(
+        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+        None,
+    ));
+
+    #[cfg(desktop)]
     let builder = builder.plugin(
             tauri_plugin_tracing::Builder::new()
                 .with_max_level(tracing_level)
@@ -1281,12 +1323,13 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_desktop_signals_to_engine, apply_reloaded_config, break_overlay_snapshot_for_android,
+        apply_desktop_signals_to_engine, apply_reloaded_config, autostart_action,
+        break_overlay_snapshot_for_android,
         create_break_engine, create_break_engine_for_tests, debug_engine_phase_for_android,
         force_break_now_for_android, format_tray_title, reload_runtime_config_for_tests,
         normalize_settings, save_engine_snapshot, save_registered_engine_snapshot, set_shared_break_engine_for_tests,
         set_snapshot_app_data_dir_for_tests, singleton_test_lock, SharedBreakEngine,
-        SNAPSHOT_FILE_NAME,
+        AutostartAction, SNAPSHOT_FILE_NAME,
     };
     use crate::break_engine::{
         BreakEngine, BreakEngineConfig, BreakKind, EnginePhase, EngineStatus,
@@ -1367,6 +1410,12 @@ mod tests {
         config.pre_break_warning_time = 5;
         config.persist_state = persist_state;
         config
+    }
+
+    #[test]
+    fn autostart_action_matches_start_at_login_setting() {
+        assert_eq!(autostart_action(true), AutostartAction::Enable);
+        assert_eq!(autostart_action(false), AutostartAction::Disable);
     }
 
     fn unique_test_dir(name: &str) -> TestDir {
