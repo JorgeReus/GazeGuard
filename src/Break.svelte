@@ -12,6 +12,7 @@
   let title = "Take a Break";
   let canSkip = false;
   let canPostpone = false;
+  let showDistanceGuidance = false;
   let options: PostponeOption[] = [];
   let timer: ReturnType<typeof setInterval>;
   let closing = false;
@@ -88,6 +89,8 @@
     title =
       breakInfo.template_name?.replaceAll("_", " ") ??
       (breakInfo.kind === "long" ? "Take a Long Break" : "Take a Short Break");
+    showDistanceGuidance =
+      breakInfo.template_name === "Focus on a point in the far distance";
     canSkip = Boolean(status?.can_skip) && !status?.skip_limit_reached;
     canPostpone = Boolean(status?.can_postpone);
     await playSound(startSound);
@@ -113,10 +116,14 @@
 <svelte:head><title>Take a Break</title></svelte:head>
 <main class="break-screen">
   <div class="break-content">
-    <div class="indicator" aria-hidden="true">◉</div>
+    <div class="indicator" aria-hidden="true">
+      <div class="pulse-ring"></div>
+      <div class="pulse-ring inner"></div>
+      <div class="indicator-icon">◉</div>
+    </div>
     <h1>{title}</h1>
     <div class="timer">{formatTime(Math.max(0, seconds))}</div>
-    <p>Look at something 6 meters away.</p>
+    {#if showDistanceGuidance}<p>Look at something 6 meters away.</p>{/if}
   </div>
   <div class="actions">
     {#if canSkip}<button onclick={() => finish("skip_break")}>Skip Break</button
@@ -166,15 +173,48 @@
     display: grid;
     gap: 16px;
     justify-items: center;
+    animation: break-fade-in 500ms ease-out both;
   }
   .indicator {
+    position: relative;
     display: grid;
     place-items: center;
     width: 192px;
     height: 192px;
+  }
+  .pulse-ring {
+    position: absolute;
+    inset: 0;
     border: 2px solid currentColor;
     border-radius: 50%;
-    font-size: 64px;
+    opacity: 0.2;
+    animation: pulse-ring 4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+  .pulse-ring.inner {
+    inset: 16px;
+    border-width: 1px;
+    animation-delay: 500ms;
+  }
+  .indicator-icon {
+    display: grid;
+    place-items: center;
+    width: 96px;
+    height: 96px;
+    border-radius: 50%;
+    background: #4a7c7c;
+    color: #ecfffe;
+    font-size: 48px;
+  }
+  @keyframes break-fade-in {
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  @keyframes pulse-ring {
+    0%, 100% { transform: scale(0.95); opacity: 0.2; }
+    50% { transform: scale(1.05); opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .break-content, .pulse-ring { animation: none; }
   }
   .timer {
     font-size: 80px;
