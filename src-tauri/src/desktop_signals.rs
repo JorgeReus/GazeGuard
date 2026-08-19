@@ -721,7 +721,7 @@ mod platform {
             macos_signals_from_sources_logged(
                 fallback,
                 native_idle_active(configured_level),
-                native_fullscreen_active(app, configured_level),
+                None,
                 configured_level,
             )
         }
