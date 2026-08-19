@@ -88,6 +88,7 @@ impl TrayUpdater {
 
     fn run(app: tauri::AppHandle, engine: SharedBreakEngine, stop: Arc<(Mutex<bool>, Condvar)>) {
         let mut was_on_break = false;
+        let mut was_warning = false;
         loop {
             refresh_desktop_signals(&app, &engine);
             refresh_tray_title(&app);
@@ -97,11 +98,19 @@ impl TrayUpdater {
                 .as_ref()
                 .map(|status| matches!(status.phase, break_engine::EnginePhase::OnBreak))
                 .unwrap_or(false);
+            let is_warning = break_status
+                .as_ref()
+                .map(|status| matches!(status.phase, break_engine::EnginePhase::Warning))
+                .unwrap_or(false);
+            if is_warning && !was_warning {
+                let _ = app.emit("break-warning", ());
+            }
             if is_on_break && !was_on_break {
                 tauri_plugin_tracing::tracing::debug!(?break_status, "Opening break window");
                 let _ = open_break_window(app.clone());
             }
             was_on_break = is_on_break;
+            was_warning = is_warning;
 
             let (lock, wake) = &*stop;
             let stopped = lock
@@ -270,10 +279,11 @@ fn break_overlay_snapshot_for_android() -> String {
             let status = guard.status();
             let phase = engine_phase_label(&status.phase).to_string();
             let remaining_seconds = status.seconds_remaining.unwrap_or(0);
+            let notifications_enabled = guard.config().notifications_enabled;
             let (message, should_show_notification, should_show_overlay) = match status.phase {
                 break_engine::EnginePhase::Warning => (
                     format!("Break starts in {remaining_seconds} seconds"),
-                    true,
+                    notifications_enabled,
                     false,
                 ),
                 break_engine::EnginePhase::OnBreak => (
@@ -293,7 +303,7 @@ fn break_overlay_snapshot_for_android() -> String {
                                 })
                         })
                         .unwrap_or_else(|| "Take a Break".to_string()),
-                    true,
+                    notifications_enabled,
                     true,
                 ),
                 _ => ("Break ended".to_string(), false, false),

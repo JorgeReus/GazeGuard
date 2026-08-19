@@ -13,6 +13,10 @@ pub enum BreakKind {
     Long,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme { #[default] System, Light, Dark }
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct BreakTemplate {
@@ -40,6 +44,8 @@ fn default_pause_during_fullscreen() -> bool {
     true
 }
 
+fn default_true() -> bool { true }
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BreakEngineConfig {
     pub break_interval: u64,
@@ -51,6 +57,10 @@ pub struct BreakEngineConfig {
     pub random_order: bool,
     pub allow_postpone: bool,
     pub play_sound: bool,
+    pub notifications_enabled: bool,
+    pub eye_exercises: bool,
+    pub animate_guidance: bool,
+    pub theme: Theme,
     pub postpone_options: Vec<PostponeOption>,
     pub strict_break: bool,
     pub consecutive_skip_limit: u8,
@@ -74,6 +84,14 @@ struct RawBreakEngineConfig {
     allow_postpone: bool,
     #[serde(default = "default_play_sound")]
     play_sound: bool,
+    #[serde(default = "default_true")]
+    notifications_enabled: bool,
+    #[serde(default = "default_true")]
+    eye_exercises: bool,
+    #[serde(default = "default_true")]
+    animate_guidance: bool,
+    #[serde(default)]
+    theme: Theme,
     #[serde(default)]
     persist_state: bool,
     #[serde(default)]
@@ -107,6 +125,10 @@ impl Default for RawBreakEngineConfig {
             random_order: true,
             allow_postpone: true,
             play_sound: true,
+            notifications_enabled: true,
+            eye_exercises: true,
+            animate_guidance: true,
+            theme: Theme::System,
             persist_state: true,
             postpone_options: vec![
                 PostponeOption { duration: 5, unit: "minutes".to_string(), seconds: 0 },
@@ -194,6 +216,10 @@ impl BreakEngineConfig {
             random_order: raw.random_order,
             allow_postpone: raw.allow_postpone,
             play_sound: raw.play_sound,
+            notifications_enabled: raw.notifications_enabled,
+            eye_exercises: raw.eye_exercises,
+            animate_guidance: raw.animate_guidance,
+            theme: raw.theme,
             postpone_options: raw
                 .postpone_options
                 .into_iter()
@@ -293,6 +319,7 @@ pub struct BreakEngine {
 impl BreakEngine {
     pub fn is_idle(&self) -> bool {
         self.idle_active
+            && self.idle_elapsed_seconds >= self.config.idle_time.saturating_mul(60)
     }
 
     pub fn new(config: BreakEngineConfig) -> Self {
@@ -811,24 +838,15 @@ impl BreakEngine {
     }
 
     fn next_template_name(&mut self, kind: BreakKind) -> Option<String> {
+        if !self.config.eye_exercises { return None; }
         match kind {
             BreakKind::Short => {
-                if self.config.short_breaks.is_empty() {
-                    None
-                } else {
-                    let index = self.current_template_index(BreakKind::Short)?;
-                    let template = self.config.short_breaks[index].name.clone();
-                    Some(template)
-                }
+                let index = self.current_template_index(BreakKind::Short)?;
+                Some(self.config.short_breaks[index].name.clone())
             }
             BreakKind::Long => {
-                if self.config.long_breaks.is_empty() {
-                    None
-                } else {
-                    let index = self.current_template_index(BreakKind::Long)?;
-                    let template = self.config.long_breaks[index].name.clone();
-                    Some(template)
-                }
+                let index = self.current_template_index(BreakKind::Long)?;
+                Some(self.config.long_breaks[index].name.clone())
             }
         }
     }
