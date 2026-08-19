@@ -32,14 +32,6 @@ fn default_skip_limit() -> u8 {
     2
 }
 
-fn default_postpone_duration() -> u64 {
-    5
-}
-
-fn default_postpone_unit() -> String {
-    "minutes".to_string()
-}
-
 fn default_play_sound() -> bool {
     true
 }
@@ -59,7 +51,6 @@ pub struct BreakEngineConfig {
     pub random_order: bool,
     pub allow_postpone: bool,
     pub play_sound: bool,
-    pub postpone_duration_seconds: u64,
     pub postpone_options: Vec<PostponeOption>,
     pub strict_break: bool,
     pub consecutive_skip_limit: u8,
@@ -76,8 +67,6 @@ pub struct BreakEngineConfig {
 #[serde(default, deny_unknown_fields)]
 struct RawBreakEngineConfig {
     #[serde(default)]
-    meta: Option<RawConfigMeta>,
-    #[serde(default)]
     log_level: Option<String>,
     #[serde(default)]
     random_order: bool,
@@ -87,10 +76,6 @@ struct RawBreakEngineConfig {
     play_sound: bool,
     #[serde(default)]
     persist_state: bool,
-    #[serde(default = "default_postpone_duration")]
-    postpone_duration: u64,
-    #[serde(default = "default_postpone_unit")]
-    postpone_unit: String,
     #[serde(default)]
     postpone_options: Vec<PostponeOption>,
     short_break_interval: u64,
@@ -118,14 +103,11 @@ struct RawBreakEngineConfig {
 impl Default for RawBreakEngineConfig {
     fn default() -> Self {
         Self {
-            meta: Some(RawConfigMeta { config_version: Some("6.0.4".to_string()) }),
             log_level: Some("info".to_string()),
             random_order: true,
             allow_postpone: true,
             play_sound: true,
             persist_state: true,
-            postpone_duration: 5,
-            postpone_unit: "minutes".to_string(),
             postpone_options: vec![
                 PostponeOption { duration: 5, unit: "minutes".to_string(), seconds: 0 },
                 PostponeOption { duration: 10, unit: "minutes".to_string(), seconds: 0 },
@@ -157,12 +139,6 @@ impl Default for RawBreakEngineConfig {
             ],
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-struct RawConfigMeta {
-    #[serde(default)]
-    config_version: Option<String>,
 }
 
 impl BreakEngineConfig {
@@ -218,7 +194,6 @@ impl BreakEngineConfig {
             random_order: raw.random_order,
             allow_postpone: raw.allow_postpone,
             play_sound: raw.play_sound,
-            postpone_duration_seconds: postpone_seconds(raw.postpone_duration, &raw.postpone_unit),
             postpone_options: raw
                 .postpone_options
                 .into_iter()
@@ -416,7 +391,9 @@ impl BreakEngine {
             postpone_reason: self.postpone_reason().map(str::to_string),
             current_break: self.current_break.clone(),
             can_skip: self.current_break.is_some() && skip_allowed,
-            can_postpone: self.current_break.is_some() && self.config.allow_postpone,
+            can_postpone: self.current_break.is_some()
+                && self.config.allow_postpone
+                && !self.config.postpone_options.is_empty(),
             skip_limit_reached,
         }
     }
@@ -602,7 +579,7 @@ impl BreakEngine {
                 }
                 seconds
             }
-            None => self.config.postpone_duration_seconds,
+            None => return Err("No postpone duration was selected.".into()),
         };
 
         self.phase = EnginePhase::Running;
@@ -1144,7 +1121,6 @@ mod tests {
         assert_eq!(config.log_level, crate::logger::LogLevel::Info);
         assert!(!config.strict_break);
         assert!(config.allow_postpone);
-        assert_eq!(config.postpone_duration_seconds, 5 * 60);
         assert_eq!(config.postpone_options.len(), 3);
         assert_eq!(config.postpone_options[0].seconds, 5 * 60);
         assert_eq!(config.postpone_options[1].seconds, 10 * 60);
@@ -1332,8 +1308,6 @@ mod tests {
     #[test]
     fn loads_persist_state_from_yaml() {
         let yaml = r#"
-meta:
-  config_version: "6.0.4"
 random_order: true
 allow_postpone: true
 short_break_interval: 15
@@ -1342,8 +1316,6 @@ long_break_duration: 60
 pre_break_warning_time: 10
 short_break_duration: 15
 persist_state: true
-postpone_duration: 5
-postpone_unit: minutes
 postpone_options:
   - duration: 5
     unit: minutes
@@ -2327,7 +2299,6 @@ consecutive_skip_limit: 2
     fn postpone_break_reschedules_work_without_consuming_skip() {
         let mut config = BreakEngineConfig::load();
         config.allow_postpone = true;
-        config.postpone_duration_seconds = 5 * 60;
         config.postpone_options = vec![super::PostponeOption {
             duration: 5,
             unit: "minutes".into(),
@@ -2338,7 +2309,9 @@ consecutive_skip_limit: 2
         engine.start();
         engine.begin_break_now();
 
-        let status = engine.postpone_break_with_override(None).unwrap();
+        let status = engine
+            .postpone_break_with_override(Some(5 * 60))
+            .unwrap();
 
         assert!(matches!(status.phase, EnginePhase::Running));
         assert_eq!(status.seconds_remaining, Some(5 * 60));
@@ -2351,7 +2324,6 @@ consecutive_skip_limit: 2
     fn postpone_break_rejects_unconfigured_override() {
         let mut config = BreakEngineConfig::load();
         config.allow_postpone = true;
-        config.postpone_duration_seconds = 5 * 60;
         config.postpone_options = vec![super::PostponeOption {
             duration: 5,
             unit: "minutes".into(),
