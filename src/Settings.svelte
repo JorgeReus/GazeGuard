@@ -65,6 +65,18 @@
     try { await invoke('update_settings', { settings }); }
     catch (e) { error = String(e); }
   }
+
+  function updateBreakList(key: 'short_breaks' | 'long_breaks', event: Event) {
+    const names = (event.currentTarget as HTMLTextAreaElement).value
+      .split('\n').map((name) => name.trim()).filter(Boolean);
+    updateSetting(key, names.map((name) => ({ name })));
+  }
+
+  function updatePostponeOptions(event: Event) {
+    const durations = (event.currentTarget as HTMLInputElement).value
+      .split(',').map((value) => Number(value.trim())).filter((value) => Number.isFinite(value) && value > 0);
+    updateSetting('postpone_options', durations.map((duration) => ({ duration, unit: 'minutes' })));
+  }
 </script>
 
 <svelte:head><title>GazeGuard Settings</title></svelte:head>
@@ -78,6 +90,16 @@
       <div class="divider"></div>
       <label class="row">Long break interval <span><input type="number" value={settings.long_break_interval ?? ''} onchange={(e) => updateSetting('long_break_interval', Number((e.currentTarget as HTMLInputElement).value))} aria-label="Long break interval"> min</span></label>
       <label class="row">Long break duration <span><input type="number" value={settings.long_break_duration ?? ''} onchange={(e) => updateSetting('long_break_duration', Number((e.currentTarget as HTMLInputElement).value))} aria-label="Long break duration"> min</span></label>
+      <label class="row">Pre-break warning <span><input type="number" value={settings.pre_break_warning_time ?? ''} onchange={(e) => updateSetting('pre_break_warning_time', Number((e.currentTarget as HTMLInputElement).value))} aria-label="Pre-break warning"> s</span></label>
+      <label class="row">Consecutive skip limit <span><input type="number" min="0" value={settings.consecutive_skip_limit ?? ''} onchange={(e) => updateSetting('consecutive_skip_limit', Number((e.currentTarget as HTMLInputElement).value))} aria-label="Consecutive skip limit"></span></label>
+    </section>
+    <section><h2>Postpone options</h2>
+      <label class="row column">Durations in minutes<input type="text" value={(settings.postpone_options ?? []).map((option: any) => option.duration).join(', ')} onchange={updatePostponeOptions} aria-label="Postpone durations"></label>
+      <p class="hint">Leave empty to disable postponing.</p>
+    </section>
+    <section><h2>Break content</h2>
+      <label class="row column">Short breaks<textarea value={(settings.short_breaks ?? []).map((item: any) => item.name).join('\n')} onchange={(event) => updateBreakList('short_breaks', event)} aria-label="Short break exercises"></textarea></label>
+      <label class="row column">Long breaks<textarea value={(settings.long_breaks ?? []).map((item: any) => item.name).join('\n')} onchange={(event) => updateBreakList('long_breaks', event)} aria-label="Long break exercises"></textarea></label>
     </section>
     <section><h2>Break experience</h2>
       {#each toggles.slice(1, 4) as [label, checked]}
@@ -87,6 +109,9 @@
     </section>
     <section><h2>Appearance</h2><label class="row">Theme<select bind:value={theme} onchange={() => { localStorage.setItem('gazeguard-theme', theme); applyTheme(theme); }}><option value="system">Match System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></section>
     <section><h2>Behavior</h2>
+      <label class="row">Random break order<input class="toggle" type="checkbox" checked={settings.random_order === true} onchange={(event) => updateSetting('random_order', (event.currentTarget as HTMLInputElement).checked)} aria-label="Random break order"></label>
+      <label class="row">Strict breaks<input class="toggle" type="checkbox" checked={settings.strict_break === true} onchange={(event) => updateSetting('strict_break', (event.currentTarget as HTMLInputElement).checked)} aria-label="Strict breaks"></label>
+      <label class="row">Log level<select value={settings.log_level ?? 'info'} onchange={(event) => updateSetting('log_level', (event.currentTarget as HTMLSelectElement).value)} aria-label="Log level"><option value="off">Off</option><option value="error">Error</option><option value="warn">Warn</option><option value="info">Info</option><option value="debug">Debug</option><option value="trace">Trace</option></select></label>
       {#each behaviorToggles as [label, key]}
         <label class="row" title={key === 'pause_during_fullscreen' ? 'Coming soon' : undefined}>
           {label}{key === 'pause_during_fullscreen' ? ' (Coming soon)' : ''}
