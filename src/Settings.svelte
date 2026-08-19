@@ -10,10 +10,11 @@
   let error = '';
   let soundEnabled = false;
   let settings: Record<string, any> = {};
+  const isAndroid = /Android/i.test(navigator.userAgent);
+  const colorScheme = matchMedia('(prefers-color-scheme: dark)');
 
   const toggles = [
-    ['Enable notifications', true], ['Eye exercises', true], ['Animate guidance', true],
-    ['Play sound (start/end)', false]
+    ['notifications_enabled', 'Enable notifications'], ['eye_exercises', 'Eye exercises'], ['animate_guidance', 'Animate guidance']
   ] as const;
 
   const behaviorToggles = [
@@ -24,7 +25,8 @@
 
   function applyTheme(value: Theme) {
     theme = value;
-    document.documentElement.dataset.theme = value;
+    document.documentElement.dataset.theme = value === 'system'
+      ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : value;
   }
 
   async function testBreak() {
@@ -48,21 +50,31 @@
   }
 
   onMount(async () => {
-    applyTheme((localStorage.getItem('gazeguard-theme') as Theme) || 'system');
+    const syncSystemTheme = () => { if (theme === 'system') applyTheme('system'); };
+    colorScheme.addEventListener('change', syncSystemTheme);
     if (invoke) {
       try {
         settings = await invoke('get_settings') as Record<string, any>;
         soundEnabled = settings.play_sound !== false;
+        theme = settings.theme ?? 'system';
+        applyTheme(theme);
         const engine = await invoke('get_engine_status') as { phase?: string };
         status = engine.phase === 'running' ? 'Running' : 'Ready';
       } catch { soundEnabled = false; status = 'Ready'; }
     }
+    return () => colorScheme.removeEventListener('change', syncSystemTheme);
   });
 
   async function updateSetting(key: string, value: unknown) {
     if (!invoke) return;
     settings = { ...settings, [key]: value };
     try { await invoke('update_settings', { settings }); }
+    catch (e) { error = String(e); }
+  }
+
+  async function saveSettings() {
+    if (!invoke) return;
+    try { await invoke('update_settings', { settings }); status = 'Settings saved'; error = ''; }
     catch (e) { error = String(e); }
   }
 
@@ -102,12 +114,12 @@
       <label class="row column">Long breaks<textarea value={(settings.long_breaks ?? []).map((item: any) => item.name).join('\n')} onchange={(event) => updateBreakList('long_breaks', event)} aria-label="Long break exercises"></textarea></label>
     </section>
     <section><h2>Break experience</h2>
-      {#each toggles.slice(1, 4) as [label, checked]}
-        <label class="row">{label}<input class="toggle" type="checkbox" checked={label === 'Play sound (start/end)' ? soundEnabled : checked} onchange={label === 'Play sound (start/end)' ? setSoundEnabled : undefined} aria-label={label}></label>
+      {#each toggles as [key, label]}
+        <label class="row" title={key === 'notifications_enabled' && !isAndroid ? 'Android only' : undefined}>{label}{key === 'notifications_enabled' && !isAndroid ? ' (Android only)' : ''}<input class="toggle" type="checkbox" checked={settings[key] !== false} disabled={key === 'notifications_enabled' && !isAndroid} onchange={(event) => updateSetting(key, (event.currentTarget as HTMLInputElement).checked)} aria-label={label}></label>
       {/each}
-      <label class="row column">Exercise style<select><option>Automatic</option><option>Blinking</option><option>Gaze movement</option><option>Relaxation</option></select></label>
+      <label class="row">Play sound (start/end)<input class="toggle" type="checkbox" checked={soundEnabled} onchange={setSoundEnabled} aria-label="Play sound (start/end)"></label>
     </section>
-    <section><h2>Appearance</h2><label class="row">Theme<select bind:value={theme} onchange={() => { localStorage.setItem('gazeguard-theme', theme); applyTheme(theme); }}><option value="system">Match System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></section>
+    <section><h2>Appearance</h2><label class="row">Theme<select value={settings.theme ?? 'system'} onchange={(event) => { const value = (event.currentTarget as HTMLSelectElement).value as Theme; applyTheme(value); updateSetting('theme', value); }}><option value="system">Match System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></section>
     <section><h2>Behavior</h2>
       <label class="row">Random break order<input class="toggle" type="checkbox" checked={settings.random_order === true} onchange={(event) => updateSetting('random_order', (event.currentTarget as HTMLInputElement).checked)} aria-label="Random break order"></label>
       <label class="row">Strict breaks<input class="toggle" type="checkbox" checked={settings.strict_break === true} onchange={(event) => updateSetting('strict_break', (event.currentTarget as HTMLInputElement).checked)} aria-label="Strict breaks"></label>
@@ -122,5 +134,5 @@
     <section><h2>Developer profiling</h2><div class="actions"><button onclick={() => profile('start_cpu_profile')}>Start CPU Profile</button><button onclick={() => profile('stop_cpu_profile')}>Stop CPU Profile</button></div></section>
     {#if error}<p class="error">{error}</p>{/if}
   </main>
-  <footer><div class="status"><span class="dot"></span>Status: {status}</div><div class="actions"><button onclick={testBreak}>Test Break</button><button class="primary" onclick={() => status = 'Settings saved'}>Save Settings</button></div></footer>
+  <footer><div class="status"><span class="dot"></span>Status: {status}</div><div class="actions"><button onclick={testBreak}>Test Break</button><button class="primary" onclick={saveSettings}>Save Settings</button></div></footer>
 </div>

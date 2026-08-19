@@ -52,7 +52,6 @@
         <div class="row"><span>Eye exercises</span><input class="toggle" type="checkbox" checked></div>
         <div class="row"><span>Animate guidance</span><input class="toggle" type="checkbox" checked></div>
         <div class="row"><span>Play sound (start/end)</span><input class="toggle" type="checkbox"></div>
-        <div class="row"><label for="exerciseStyle">Exercise style</label><select id="exerciseStyle" class="wide"><option>Automatic</option><option>Blinking</option><option>Gaze movement</option><option>Relaxation</option></select></div>
       </section>
       <section><h2>Appearance</h2><div class="row"><label for="themeSelect">Theme</label><select id="themeSelect" class="wide"><option value="system">Match System</option><option value="light">Light</option><option value="dark">Dark</option></select></div></section>
       <section><h2>Behavior</h2>
@@ -71,8 +70,8 @@
     const status = document.getElementById('status');
     const error = document.getElementById('error');
     function applyTheme(value) { document.documentElement.dataset.theme = value; theme.value = value; }
-    applyTheme(localStorage.getItem('gazeguard-theme') || 'system');
-    theme.addEventListener('change', () => { localStorage.setItem('gazeguard-theme', theme.value); applyTheme(theme.value); });
+    applyTheme('system');
+    theme.addEventListener('change', () => { applyTheme(theme.value); });
     document.getElementById('testBreak').addEventListener('click', async () => { try { await invoke('show_break_window'); status.textContent = 'Break started'; } catch (e) { error.textContent = e; error.style.display = 'block'; } });
     document.getElementById('save').addEventListener('click', () => { status.textContent = 'Settings saved'; });
     document.getElementById('startProfile').addEventListener('click', async () => { try { await invoke('start_cpu_profile'); status.textContent = 'CPU profiling'; } catch (e) { error.textContent = e; error.style.display = 'block'; } });

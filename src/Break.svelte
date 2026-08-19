@@ -18,6 +18,9 @@
   let closing = false;
   let lastCountdown = 0;
   let soundEnabled = false;
+  let animateGuidance = true;
+  let theme: "system" | "light" | "dark" = "system";
+  const colorScheme = matchMedia("(prefers-color-scheme: dark)");
   const startSound = new Audio("/sounds/on_pre_break.wav");
   const stopSound = new Audio("/sounds/on_stop_break.wav");
 
@@ -77,6 +80,10 @@
     ]);
     info("GazeGuard break settings", settings);
     soundEnabled = settings?.play_sound === true;
+    animateGuidance = settings?.animate_guidance !== false;
+    theme = settings?.theme ?? "system";
+    document.documentElement.dataset.theme = theme === "system"
+      ? (colorScheme.matches ? "dark" : "light") : theme;
     options = schedule.postpone_options ?? [];
     const breakInfo =
       status?.current_break ?? (await invoke("get_current_break_info"));
@@ -100,12 +107,14 @@
   }
 
   onMount(async () => {
-    document.documentElement.dataset.theme =
-      localStorage.getItem("gazeguard-theme") || "system";
+    const syncSystemTheme = () => {
+      if (theme === "system") document.documentElement.dataset.theme = colorScheme.matches ? "dark" : "light";
+    };
+    colorScheme.addEventListener("change", syncSystemTheme);
     invoke = window.__TAURI__?.core?.invoke;
-    if (!invoke) return;
+    if (!invoke) return () => colorScheme.removeEventListener("change", syncSystemTheme);
     await loadBreak();
-    return () => clearInterval(timer);
+    return () => { clearInterval(timer); colorScheme.removeEventListener("change", syncSystemTheme); };
   });
 
   function formatTime(value: number) {
@@ -115,7 +124,7 @@
 
 <svelte:head><title>Take a Break</title></svelte:head>
 <main class="break-screen">
-  <div class="break-content">
+  <div class:static-guidance={!animateGuidance} class="break-content">
     <div class="indicator" aria-hidden="true">
       <div class="pulse-ring"></div>
       <div class="pulse-ring inner"></div>
@@ -175,6 +184,7 @@
     justify-items: center;
     animation: break-fade-in 500ms ease-out both;
   }
+  .static-guidance, .static-guidance .pulse-ring { animation: none; }
   .indicator {
     position: relative;
     display: grid;
