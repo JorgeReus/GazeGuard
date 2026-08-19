@@ -12,6 +12,7 @@
   let settings: Record<string, any> = {};
   const isAndroid = /Android/i.test(navigator.userAgent);
   const colorScheme = matchMedia('(prefers-color-scheme: dark)');
+  const warningSound = new Audio('/sounds/on_pre_break.wav');
 
   const toggles = [
     ['notifications_enabled', 'Enable notifications'], ['eye_exercises', 'Eye exercises'], ['animate_guidance', 'Animate guidance']
@@ -52,6 +53,9 @@
   onMount(async () => {
     const syncSystemTheme = () => { if (theme === 'system') applyTheme('system'); };
     colorScheme.addEventListener('change', syncSystemTheme);
+    const unlisten = window.__TAURI__?.event?.listen?.('break-warning', () => {
+      if (settings.play_sound !== false) { warningSound.currentTime = 0; warningSound.play().catch(() => {}); }
+    });
     if (invoke) {
       try {
         settings = await invoke('get_settings') as Record<string, any>;
@@ -62,7 +66,10 @@
         status = engine.phase === 'running' ? 'Running' : 'Ready';
       } catch { soundEnabled = false; status = 'Ready'; }
     }
-    return () => colorScheme.removeEventListener('change', syncSystemTheme);
+    return () => {
+      colorScheme.removeEventListener('change', syncSystemTheme);
+      unlisten?.then((stop: () => void) => stop());
+    };
   });
 
   async function updateSetting(key: string, value: unknown) {
