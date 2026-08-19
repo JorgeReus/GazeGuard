@@ -316,6 +316,10 @@ pub struct BreakEngine {
 }
 
 impl BreakEngine {
+    pub fn is_idle(&self) -> bool {
+        self.idle_active
+    }
+
     pub fn new(config: BreakEngineConfig) -> Self {
         let interval = config.break_interval.saturating_mul(60);
         let mut engine = Self {

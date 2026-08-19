@@ -88,7 +88,10 @@
     <section><h2>Appearance</h2><label class="row">Theme<select bind:value={theme} onchange={() => { localStorage.setItem('gazeguard-theme', theme); applyTheme(theme); }}><option value="system">Match System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></section>
     <section><h2>Behavior</h2>
       {#each behaviorToggles as [label, key]}
-        <label class="row">{label}<input class="toggle" type="checkbox" checked={settings[key] === true} onchange={(event) => updateSetting(key, (event.currentTarget as HTMLInputElement).checked)} aria-label={label}></label>
+        <label class="row" title={key === 'pause_during_fullscreen' ? 'Coming soon' : undefined}>
+          {label}{key === 'pause_during_fullscreen' ? ' (Coming soon)' : ''}
+          <input class="toggle" type="checkbox" checked={settings[key] === true} disabled={key === 'pause_during_fullscreen'} onchange={(event) => updateSetting(key, (event.currentTarget as HTMLInputElement).checked)} aria-label={label}>
+        </label>
       {/each}
     </section>
     <section><h2>Developer profiling</h2><div class="actions"><button onclick={() => profile('start_cpu_profile')}>Start CPU Profile</button><button onclick={() => profile('stop_cpu_profile')}>Stop CPU Profile</button></div></section>

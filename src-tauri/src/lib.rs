@@ -633,7 +633,14 @@ fn refresh_tray_title(app: &tauri::AppHandle) {
         .state::<SharedBreakEngine>()
         .lock()
         .ok()
-        .map(|mut engine| format_tray_title(&engine.status()))
+        .map(|mut engine| {
+            let title = format_tray_title(&engine.status());
+            if engine.is_idle() {
+                format!("{title} (idle)")
+            } else {
+                title
+            }
+        })
         .unwrap_or_else(|| "GazeGuard".to_string());
 
     let _ = tray.set_title(Some(&title));
