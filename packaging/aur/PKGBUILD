@@ -1,0 +1,25 @@
+pkgname=gazeguard-bin
+pkgver=0.5.0
+pkgrel=1
+pkgdesc='Break reminder for healthier screen use'
+arch=('x86_64')
+url='https://github.com/JorgeReus/GazeGuard'
+license=('MIT')
+depends=(
+  'cairo'
+  'desktop-file-utils'
+  'gdk-pixbuf2'
+  'glib2'
+  'gtk3'
+  'hicolor-icon-theme'
+  'libappindicator-gtk3'
+  'libsoup'
+  'pango'
+  'webkit2gtk-4.1'
+)
+source_x86_64=("${url}/releases/download/v${pkgver}/gazeguard_${pkgver}_amd64.deb")
+sha256sums_x86_64=('SKIP')
+
+package() {
+  bsdtar -xf "${srcdir}/gazeguard_${pkgver}_amd64.deb" -C "${pkgdir}"
+}

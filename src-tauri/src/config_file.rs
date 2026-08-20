@@ -35,7 +35,7 @@ pub fn desktop_config_path() -> Result<PathBuf, String> {
     Err("unsupported desktop platform".to_string())
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(desktop)]
 pub fn desktop_config_path_from_home(home: &Path) -> PathBuf {
     home.join(".config")
         .join("GazeGuard")
@@ -104,7 +104,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(desktop)]
     #[test]
     fn desktop_config_path_uses_dot_config_directory() {
         let path = desktop_config_path_from_home(Path::new("/tmp/test-home"));
