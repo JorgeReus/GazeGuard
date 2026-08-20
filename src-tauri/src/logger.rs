@@ -1,6 +1,76 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Arguments, Display, Formatter};
 use std::io::{self, Write};
+use std::sync::Arc;
+
+pub trait Logger: Send + Sync {
+    fn debug(&self, message: &str);
+    fn error(&self, message: &str);
+}
+
+#[derive(Clone)]
+pub struct LoggerService {
+    backend: Arc<dyn Logger>,
+}
+
+impl LoggerService {
+    pub fn new(backend: Arc<dyn Logger>) -> Self {
+        Self { backend }
+    }
+
+    pub fn debug(&self, message: &str) {
+        self.backend.debug(message);
+    }
+
+    pub fn error(&self, message: &str) {
+        self.backend.error(message);
+    }
+}
+
+#[cfg(desktop)]
+pub struct DesktopLogger;
+
+#[cfg(not(desktop))]
+pub struct MobileLogger;
+
+#[cfg(desktop)]
+impl Logger for DesktopLogger {
+    fn debug(&self, message: &str) {
+        tracing::debug!("{message}");
+    }
+
+    fn error(&self, message: &str) {
+        tracing::error!("{message}");
+    }
+}
+
+#[cfg(not(desktop))]
+impl Logger for MobileLogger {
+    fn debug(&self, message: &str) {
+        tracing::debug!("{message}");
+    }
+
+    fn error(&self, message: &str) {
+        tracing::error!("{message}");
+    }
+}
+
+#[cfg(desktop)]
+pub fn service() -> LoggerService {
+    LoggerService::new(Arc::new(DesktopLogger))
+}
+
+#[cfg(not(desktop))]
+pub fn service() -> LoggerService {
+    LoggerService::new(Arc::new(MobileLogger))
+}
+
+#[cfg(not(desktop))]
+pub fn init_mobile_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .try_init();
+}
 
 #[cfg(test)]
 use std::cell::RefCell;

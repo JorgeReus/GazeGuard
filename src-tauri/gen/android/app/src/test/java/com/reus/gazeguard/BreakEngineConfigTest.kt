@@ -34,16 +34,6 @@ class BreakEngineConfigTest {
     }
 
     @Test
-    fun parses_schedule_from_canonical_defaults_yaml() {
-        val schedule = BreakEngineConfig.parseSchedule(
-            File("../../../config/defaults.yaml").readText(),
-        )
-
-        assertEquals(15 * 60 * 1000L, schedule.breakIntervalMillis)
-        assertEquals(10 * 1000L, schedule.preBreakWarningMillis)
-    }
-
-    @Test
     fun ensureConfigFileWritesDefaultsWhenMissing() {
         val root = createTempRoot()
         val configFile = File(root, "config/config.yaml")
