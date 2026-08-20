@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.5.0](https://github.com/JorgeReus/GazeGuard/compare/v0.4.1...v0.5.0) (2026-08-20)
+
+
+### Features
+
+* add break audio alerts ([b9565ec](https://github.com/JorgeReus/GazeGuard/commit/b9565ec694fb5b75ff303b37544846da10e73533))
+* gate desktop pause signals ([4c38790](https://github.com/JorgeReus/GazeGuard/commit/4c38790b43a9f483e6873eaa4b956a1971050964))
+* **settings:** add behavior controls and autostart ([7ad5e49](https://github.com/JorgeReus/GazeGuard/commit/7ad5e497f3d125e20e1f01ce4d481cf12e707a18))
+* **settings:** centralize break config and audio ([b12db2e](https://github.com/JorgeReus/GazeGuard/commit/b12db2ec243f12e5b2fc7d5f19eb3f6cdb39298a))
+* **settings:** complete runtime preferences ([7a2c7f5](https://github.com/JorgeReus/GazeGuard/commit/7a2c7f5cd8789c34c765eb25013ca79e999b45b6))
+* **settings:** expose advanced break controls ([f4119f2](https://github.com/JorgeReus/GazeGuard/commit/f4119f21e11fcc09379503d78219476f27c960e6))
+* **settings:** sync OS autostart ([e07c0d4](https://github.com/JorgeReus/GazeGuard/commit/e07c0d4d8476f92f68df9d81100a695472f6f8fc))
+* show idle state in tray ([f128c78](https://github.com/JorgeReus/GazeGuard/commit/f128c7827e710f9865d8829d49f6c5936b62aab7))
+
+
+### Bug Fixes
+
+* align idle label with paused timer ([8f92606](https://github.com/JorgeReus/GazeGuard/commit/8f926067533d9c15cc5f9a47f3abcce2ca3f7eb7))
+* **break:** restore animation and log levels ([7743526](https://github.com/JorgeReus/GazeGuard/commit/7743526ef2ccd6cd8625edb4cadc8f3ecdf71d89))
+
 ## [0.4.1](https://github.com/JorgeReus/GazeGuard/compare/v0.4.0...v0.4.1) (2026-08-16)
 
 
