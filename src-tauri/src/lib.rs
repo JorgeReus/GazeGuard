@@ -76,17 +76,26 @@ struct TrayUpdater {
 
 #[cfg(desktop)]
 impl TrayUpdater {
-    fn start(app: tauri::AppHandle, engine: SharedBreakEngine) -> Self {
+    fn start(
+        app: tauri::AppHandle,
+        engine: SharedBreakEngine,
+        logger: logger::LoggerService,
+    ) -> Self {
         let stop = Arc::new((Mutex::new(false), Condvar::new()));
         let worker_stop = stop.clone();
-        let handle = thread::spawn(move || Self::run(app, engine, worker_stop));
+        let handle = thread::spawn(move || Self::run(app, engine, logger, worker_stop));
         Self {
             stop,
             handle: Mutex::new(Some(handle)),
         }
     }
 
-    fn run(app: tauri::AppHandle, engine: SharedBreakEngine, stop: Arc<(Mutex<bool>, Condvar)>) {
+    fn run(
+        app: tauri::AppHandle,
+        engine: SharedBreakEngine,
+        logger: logger::LoggerService,
+        stop: Arc<(Mutex<bool>, Condvar)>,
+    ) {
         let mut was_on_break = false;
         let mut was_warning = false;
         loop {
@@ -106,7 +115,7 @@ impl TrayUpdater {
                 let _ = app.emit("break-warning", ());
             }
             if is_on_break && !was_on_break {
-                tauri_plugin_tracing::tracing::debug!(?break_status, "Opening break window");
+                logger.debug(&format!("Opening break window: {break_status:?}"));
                 let _ = open_break_window(app.clone());
             }
             was_on_break = is_on_break;
@@ -390,7 +399,10 @@ fn runtime_config_path(app_data_dir: &Path) -> Result<PathBuf, String> {
     }
 }
 
-fn load_runtime_break_engine_config(app_data_dir: &Path) -> Result<BreakEngineConfig, String> {
+fn load_runtime_break_engine_config(
+    app_data_dir: &Path,
+    logger: &logger::LoggerService,
+) -> Result<BreakEngineConfig, String> {
     let config_path = runtime_config_path(app_data_dir)?;
     let defaults = BreakEngineConfig::defaults_yaml();
     let config = match BreakEngineConfig::load_or_create_from_path(
@@ -403,7 +415,7 @@ fn load_runtime_break_engine_config(app_data_dir: &Path) -> Result<BreakEngineCo
             BreakEngineConfig::load_or_create_from_path(&config_path, &defaults)
         }
     }?;
-    tauri_plugin_tracing::tracing::debug!(?config, "Loaded break settings");
+    logger.debug(&format!("Loaded break settings: {config:?}"));
     Ok(config)
 }
 
@@ -785,10 +797,13 @@ fn stop_break_timer(state: State<'_, SharedBreakEngine>) -> Result<EngineStatus,
 }
 
 #[tauri::command]
-fn get_engine_status(state: State<'_, SharedBreakEngine>) -> Result<EngineStatus, String> {
+fn get_engine_status(
+    state: State<'_, SharedBreakEngine>,
+    logger: State<'_, logger::LoggerService>,
+) -> Result<EngineStatus, String> {
     let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
     let status = guard.status();
-    tauri_plugin_tracing::tracing::debug!(?status, "Engine status requested");
+    logger.debug(&format!("Engine status requested: {status:?}"));
     drop(guard);
     let _ = save_registered_engine_snapshot(unix_now_seconds());
     Ok(status)
@@ -1177,10 +1192,17 @@ fn stop_cpu_profile() -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let logger = logger::service();
+
+    #[cfg(not(desktop))]
+    logger::init_mobile_tracing();
+
     #[cfg(desktop)]
     let tracing_level = tauri_plugin_tracing::LevelFilter::INFO;
 
-    let builder = tauri::Builder::default().plugin(tauri_plugin_shell::init());
+    let builder = tauri::Builder::default()
+        .manage(logger.clone())
+        .plugin(tauri_plugin_shell::init());
 
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_autostart::init(
@@ -1206,19 +1228,18 @@ pub fn run() {
     //  }
 
     builder
-        .setup(|app| {
+        .setup(move |app| {
             let app_data_dir = app.path().app_data_dir()?;
             register_snapshot_app_data_dir(app_data_dir.clone());
             let initial_config =
-                load_runtime_break_engine_config(app_data_dir.as_path()).map_err(|error| {
+                load_runtime_break_engine_config(app_data_dir.as_path(), &logger).map_err(|error| {
                     tauri::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, error))
                 })?;
             if let Err(error) = sync_autostart(&app.handle(), initial_config.start_at_login) {
-                tauri_plugin_tracing::tracing::error!(
-                    start_at_login = initial_config.start_at_login,
-                    %error,
-                    "Failed to synchronize autostart setting"
-                );
+                logger.error(&format!(
+                    "Failed to synchronize autostart setting start_at_login={} error={error}",
+                    initial_config.start_at_login
+                ));
             }
             let engine = create_break_engine_with_config(
                 initial_config.clone(),
@@ -1289,7 +1310,11 @@ pub fn run() {
                     .build(app)?;
 
                 refresh_tray_title(app.handle());
-                app.manage(TrayUpdater::start(app.handle().clone(), engine.clone()));
+                app.manage(TrayUpdater::start(
+                    app.handle().clone(),
+                    engine.clone(),
+                    logger.clone(),
+                ));
 
             }
 
