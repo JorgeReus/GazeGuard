@@ -31,6 +31,10 @@ use tauri::State;
 use tauri_plugin_tracing::TracedProfilingExt;
 #[cfg(desktop)]
 use tauri_plugin_autostart::ManagerExt;
+#[cfg(desktop)]
+use tauri_plugin_process::init as process_plugin;
+#[cfg(desktop)]
+use tauri_plugin_updater::Builder as UpdaterBuilder;
 
 #[cfg(desktop)]
 use tauri::{
@@ -1205,6 +1209,11 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init());
 
     #[cfg(desktop)]
+    let builder = builder
+        .plugin(process_plugin())
+        .plugin(UpdaterBuilder::new().build());
+
+    #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_autostart::init(
         tauri_plugin_autostart::MacosLauncher::LaunchAgent,
         None,
@@ -1267,10 +1276,12 @@ pub fn run() {
                 // Create tray menu
                 let test_break =
                     MenuItem::with_id(app, "test_break", "Test Break", true, None::<&str>)?;
+                let check_updates =
+                    MenuItem::with_id(app, "check_updates", "Check for updates", true, None::<&str>)?;
                 let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
                 let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
-                let menu = Menu::with_items(app, &[&test_break, &settings, &quit])?;
+                let menu = Menu::with_items(app, &[&test_break, &check_updates, &settings, &quit])?;
 
                 let _tray = TrayIconBuilder::with_id("main")
                     .icon(app.default_window_icon().unwrap().clone())
@@ -1299,6 +1310,13 @@ pub fn run() {
                                     .title("GazeGuard Settings")
                                     .inner_size(400.0, 300.0)
                                     .build();
+                                }
+                            }
+                            "check_updates" => {
+                                if let Some(window) = app.get_webview_window("main") {
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                    let _ = app.emit("check-for-updates", ());
                                 }
                             }
                             "quit" => {

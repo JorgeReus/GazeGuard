@@ -21,8 +21,17 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU2MTMzRTA2QUI4OTE5MDkKUldRSkdZbXJCajRUVmxnNDNCdEorWUxoV01adnBxTisyUUZ6bVpRb3Y4eEVramZtWkJaQUdKcncK",
+      "endpoints": [
+        "https://github.com/JorgeReus/GazeGuard/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",

@@ -10,11 +10,14 @@
   },
   "dependencies": {
     "@fltsci/tauri-plugin-tracing": "latest",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "svelte": "^5.0.0"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "2.11.4",
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
+    "@tauri-apps/cli": "2.11.4",
     "vite": "^8.2.1"
   }
 }

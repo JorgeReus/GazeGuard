@@ -36,6 +36,10 @@ windows-sys = { version = "0.61", features = [
 tauri-plugin-tracing = { git = "https://github.com/fltsci/tauri-plugin-tracing", features = ["profiling"] }
 tauri-plugin-autostart = "2"
 
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

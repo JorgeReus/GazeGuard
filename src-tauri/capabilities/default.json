@@ -11,6 +11,8 @@
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:event:default",
+    "process:default",
+    "updater:default",
     "autostart:default",
     "shell:allow-open"
   ]
