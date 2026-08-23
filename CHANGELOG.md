@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/JorgeReus/GazeGuard/compare/v0.5.0...v0.6.0) (2026-08-23)
+
+
+### Features
+
+* add GitHub release updater ([4d9e21a](https://github.com/JorgeReus/GazeGuard/commit/4d9e21a9c970aad3e1840ba71b5d37ad36ebb7db))
+
 ## [0.5.0](https://github.com/JorgeReus/GazeGuard/compare/v0.4.1...v0.5.0) (2026-08-20)
 
 
