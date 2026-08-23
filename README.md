@@ -192,6 +192,8 @@ The current CI artifacts are for development/testing:
 
 Before public distribution, configure Android signing and macOS Developer ID signing/notarization. Do not put signing keys or certificates in the repository. Store them as encrypted GitHub Actions secrets and use short-lived credentials where possible.
 
+The desktop updater also requires `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` GitHub Actions secrets. The matching public key is stored in `src-tauri/tauri.conf.json`; never replace it unless all existing users migrate to a newly signed build.
+
 ## Troubleshooting
 
 `tauri.settings.gradle does not exist`:

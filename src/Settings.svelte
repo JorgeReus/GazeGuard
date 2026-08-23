@@ -1,5 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { listen } from '@tauri-apps/api/event';
+  import { check } from '@tauri-apps/plugin-updater';
+  import { relaunch } from '@tauri-apps/plugin-process';
 
   type Theme = 'system' | 'light' | 'dark';
   type Invoke = ((command: string, args?: Record<string, unknown>) => Promise<unknown>) | null;
@@ -13,6 +16,26 @@
   const isAndroid = /Android/i.test(navigator.userAgent);
   const colorScheme = matchMedia('(prefers-color-scheme: dark)');
   const warningSound = new Audio('/sounds/on_pre_break.wav');
+
+  async function checkForUpdates() {
+    if (isAndroid) return;
+    status = 'Checking for updates';
+    error = '';
+    try {
+      const update = await check();
+      if (!update) { status = 'Up to date'; return; }
+      if (!window.confirm(`GazeGuard ${update.version} is available. Install now?`)) {
+        status = `Update available: ${update.version}`;
+        return;
+      }
+      status = `Installing ${update.version}`;
+      await update.downloadAndInstall();
+      await relaunch();
+    } catch (e) {
+      error = `Update failed: ${String(e)}`;
+      status = 'Update unavailable';
+    }
+  }
 
   const toggles = [
     ['notifications_enabled', 'Enable notifications'], ['eye_exercises', 'Eye exercises'], ['animate_guidance', 'Animate guidance']
@@ -66,9 +89,12 @@
         status = engine.phase === 'running' ? 'Running' : 'Ready';
       } catch { soundEnabled = false; status = 'Ready'; }
     }
+    const stopUpdateListener = isAndroid ? null : await listen('check-for-updates', checkForUpdates);
+    if (!isAndroid) void checkForUpdates();
     return () => {
       colorScheme.removeEventListener('change', syncSystemTheme);
       unlisten?.then((stop: () => void) => stop());
+      stopUpdateListener?.();
     };
   });
 
@@ -138,6 +164,7 @@
         </label>
       {/each}
     </section>
+    <section><h2>Updates</h2><div class="actions"><button disabled={isAndroid} onclick={checkForUpdates}>Check for updates</button></div></section>
     <section><h2>Developer profiling</h2><div class="actions"><button onclick={() => profile('start_cpu_profile')}>Start CPU Profile</button><button onclick={() => profile('stop_cpu_profile')}>Stop CPU Profile</button></div></section>
     {#if error}<p class="error">{error}</p>{/if}
   </main>
