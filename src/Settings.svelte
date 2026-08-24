@@ -53,6 +53,12 @@
       ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : value;
   }
 
+  function setTheme(event: Event) {
+    const value = (event.currentTarget as HTMLSelectElement).value as Theme;
+    applyTheme(value);
+    updateSetting('theme', value);
+  }
+
   async function testBreak() {
     if (!invoke) return;
     try { await invoke('show_break_window'); status = 'Break started'; error = ''; }
@@ -101,8 +107,6 @@
   async function updateSetting(key: string, value: unknown) {
     if (!invoke) return;
     settings = { ...settings, [key]: value };
-    try { await invoke('update_settings', { settings }); }
-    catch (e) { error = String(e); }
   }
 
   async function saveSettings() {
@@ -152,7 +156,7 @@
       {/each}
       <label class="row">Play sound (start/end)<input class="toggle" type="checkbox" checked={soundEnabled} onchange={setSoundEnabled} aria-label="Play sound (start/end)"></label>
     </section>
-    <section><h2>Appearance</h2><label class="row">Theme<select value={settings.theme ?? 'system'} onchange={(event) => { const value = (event.currentTarget as HTMLSelectElement).value as Theme; applyTheme(value); updateSetting('theme', value); }}><option value="system">Match System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></section>
+    <section><h2>Appearance</h2><label class="row">Theme<select data-testid="theme" aria-label="Theme" value={settings.theme ?? 'system'} oninput={setTheme} onchange={setTheme}><option value="system">Match System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></section>
     <section><h2>Behavior</h2>
       <label class="row">Random break order<input class="toggle" type="checkbox" checked={settings.random_order === true} onchange={(event) => updateSetting('random_order', (event.currentTarget as HTMLInputElement).checked)} aria-label="Random break order"></label>
       <label class="row">Strict breaks<input class="toggle" type="checkbox" checked={settings.strict_break === true} onchange={(event) => updateSetting('strict_break', (event.currentTarget as HTMLInputElement).checked)} aria-label="Strict breaks"></label>
