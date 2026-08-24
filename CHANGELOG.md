@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/JorgeReus/GazeGuard/compare/v0.6.1...v0.6.2) (2026-08-24)
+
+
+### Bug Fixes
+
+* authorize release asset uploads ([317f033](https://github.com/JorgeReus/GazeGuard/commit/317f033df2c4e84bcde0ba7cf3edcafbcb4f75a8))
+
 ## [0.6.1](https://github.com/JorgeReus/GazeGuard/compare/v0.6.0...v0.6.1) (2026-08-24)
 
 
