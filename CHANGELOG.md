@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/JorgeReus/GazeGuard/compare/v0.6.0...v0.6.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* let release please own releases ([301f9c9](https://github.com/JorgeReus/GazeGuard/commit/301f9c9475a1b5016011dea74ea12963e8df0b8d))
+
 ## [0.6.0](https://github.com/JorgeReus/GazeGuard/compare/v0.5.0...v0.6.0) (2026-08-23)
 
 
