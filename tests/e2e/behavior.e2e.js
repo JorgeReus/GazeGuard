@@ -3,12 +3,20 @@ const invoke = (command, args) => browser.tauri.execute(
   { command, args },
 );
 
+async function waitForBreakClosed() {
+  await browser.waitUntil(async () => !(await browser.getWindowHandles()).includes('break'), { timeout: 10000 });
+  await waitForMain();
+  await browser.waitUntil(async () => {
+    return !(await invoke('e2e_break_window_exists'));
+  }, { timeout: 10000 });
+}
+
 async function configure(overrides) {
   await browser.tauri.switchWindow('main');
   const settings = await invoke('get_settings');
   await invoke('update_settings', { settings: { ...settings, ...overrides } });
   await invoke('reset_e2e_engine');
-  await browser.waitUntil(async () => !(await browser.getWindowHandles()).includes('break'), { timeout: 10000 });
+  await waitForBreakClosed();
   await waitForMain();
 }
 
@@ -26,6 +34,7 @@ async function waitForMain() {
 
 async function startBreak() {
   await waitForMain();
+  await waitForBreakClosed();
   await invoke('show_break_window');
   await browser.waitUntil(async () => {
     if (!(await browser.getWindowHandles()).includes('break')) return false;
@@ -40,8 +49,7 @@ async function startBreak() {
 
 async function returnToMain(button) {
   await $(button).click();
-  await browser.waitUntil(async () => !(await browser.getWindowHandles()).includes('break'), { timeout: 10000 });
-  await waitForMain();
+  await waitForBreakClosed();
   await expect($('h1')).toHaveText('Settings');
 }
 
@@ -50,7 +58,7 @@ describe('break behavior', () => {
     try {
       if ((await browser.getWindowHandles()).includes('break')) await invoke('complete_break');
     } catch {}
-    await browser.waitUntil(async () => !(await browser.getWindowHandles()).includes('break'), { timeout: 10000 });
+    await waitForBreakClosed();
     await waitForMain();
   });
 
