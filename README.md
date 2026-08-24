@@ -55,6 +55,16 @@ Use a short interval, such as `short_break_interval: 1`, then launch the app and
 
 ## Build Locally
 
+## macOS WebdriverIO E2E tests
+
+The E2E suite uses WebdriverIO's embedded Tauri WebDriver, which is the macOS-compatible path. It requires macOS, Rust, and a debug Tauri build:
+
+```bash
+npm run test:e2e
+```
+
+The runner builds `src-tauri/target/debug/gazeguard` first when needed. Tests use an isolated app session and cover settings persistence, break controls, and the fullscreen break window. The embedded driver is provided by `tauri-plugin-wdio-webdriver`; no `tauri-driver` process is used on macOS.
+
 ### Requirements
 
 - Rust stable and Cargo
@@ -158,6 +168,7 @@ Logs are written to stderr when the app is launched from a terminal. Logging is 
 
 - Rust unit tests on Ubuntu
 - Android unit tests using the universal debug variant
+- macOS WebdriverIO E2E tests
 
 ### Release Flow
 

@@ -387,6 +387,12 @@ fn create_break_engine() -> SharedBreakEngine {
 }
 
 fn runtime_config_path(app_data_dir: &Path) -> Result<PathBuf, String> {
+    if std::env::var_os("GAZEGUARD_E2E").is_some() {
+        return Ok(std::env::temp_dir()
+            .join(format!("gazeguard-e2e-{}", std::process::id()))
+            .join(crate::config_file::CONFIG_FILE_NAME));
+    }
+
     #[cfg(desktop)]
     let _ = app_data_dir;
 
@@ -561,8 +567,9 @@ fn create_break_engine_with_config(
     app_data_dir: Option<&Path>,
     now_unix_seconds: u64,
 ) -> SharedBreakEngine {
-    let engine = app_data_dir
-        .and_then(|path| load_engine_from_disk(&config, path, now_unix_seconds))
+    let engine = (std::env::var_os("GAZEGUARD_E2E").is_none())
+        .then(|| app_data_dir.and_then(|path| load_engine_from_disk(&config, path, now_unix_seconds)))
+        .flatten()
         .unwrap_or_else(|| {
             let mut engine = BreakEngine::new(config);
             engine.start();
@@ -586,6 +593,10 @@ fn save_engine_snapshot(
     app_data_dir: &Path,
     now_unix_seconds: u64,
 ) -> Result<(), String> {
+    if std::env::var_os("GAZEGUARD_E2E").is_some() {
+        return Ok(());
+    }
+
     let snapshot = {
         let mut guard = engine
             .lock()
@@ -1088,6 +1099,22 @@ fn show_break_window(
     open_break_window(app)
 }
 
+#[tauri::command]
+fn reset_e2e_engine(
+    app: tauri::AppHandle,
+    state: State<'_, SharedBreakEngine>,
+) -> Result<(), String> {
+    if std::env::var_os("GAZEGUARD_E2E").is_none() {
+        return Err("E2E reset is disabled.".to_string());
+    }
+    let config = state.lock().map_err(|_| "State lock poisoned")?.config().clone();
+    let mut guard = state.lock().map_err(|_| "State lock poisoned")?;
+    *guard = BreakEngine::new(config);
+    guard.start();
+    drop(guard);
+    close_break_window(app)
+}
+
 fn open_break_window(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(desktop)]
     {
@@ -1151,7 +1178,7 @@ fn close_break_window(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(desktop)]
     {
         if let Some(window) = app.get_webview_window("break") {
-            window.close().map_err(|e| e.to_string())?;
+            window.destroy().map_err(|e| e.to_string())?;
         }
     }
 
@@ -1210,6 +1237,11 @@ pub fn run() {
 
     #[cfg(desktop)]
     let builder = builder
+        .plugin(tauri_plugin_wdio::init())
+        .plugin(tauri_plugin_wdio_webdriver::init());
+
+    #[cfg(desktop)]
+    let builder = builder
         .plugin(process_plugin())
         .plugin(UpdaterBuilder::new().build());
 
@@ -1220,13 +1252,17 @@ pub fn run() {
     ));
 
     #[cfg(desktop)]
-    let builder = builder.plugin(
-            tauri_plugin_tracing::Builder::new()
-                .with_max_level(tracing_level)
-                .with_file_logging()
-                .with_default_subscriber()
-                .build(),
-        );
+    let tracing = tauri_plugin_tracing::Builder::new()
+        .with_max_level(tracing_level)
+        .with_default_subscriber();
+    #[cfg(desktop)]
+    let tracing = if std::env::var_os("GAZEGUARD_E2E").is_some() {
+        tracing
+    } else {
+        tracing.with_file_logging()
+    };
+    #[cfg(desktop)]
+    let builder = builder.plugin(tracing.build());
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_tracing::init_profiling());
 
@@ -1340,6 +1376,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             show_break_window,
+            reset_e2e_engine,
             close_break_window,
             start_background_service,
             stop_background_service,
