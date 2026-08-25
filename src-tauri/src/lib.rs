@@ -1123,6 +1123,18 @@ fn e2e_break_window_exists(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(app.get_webview_window("break").is_some())
 }
 
+#[tauri::command]
+fn reach_e2e_skip_limit(state: State<'_, SharedBreakEngine>) -> Result<(), String> {
+    if std::env::var_os("GAZEGUARD_E2E").is_none() {
+        return Err("E2E skip state is disabled.".to_string());
+    }
+    state
+        .lock()
+        .map_err(|_| "State lock poisoned")?
+        .reach_skip_limit_for_e2e();
+    Ok(())
+}
+
 fn open_break_window(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(desktop)]
     {
@@ -1386,6 +1398,7 @@ pub fn run() {
             show_break_window,
             reset_e2e_engine,
             e2e_break_window_exists,
+            reach_e2e_skip_limit,
             close_break_window,
             start_background_service,
             stop_background_service,
