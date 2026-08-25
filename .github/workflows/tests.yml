@@ -72,8 +72,12 @@ jobs:
         working-directory: src-tauri/gen/android
         run: ./gradlew app:testUniversalDebugUnitTest
 
-  webdriver-macos:
-    runs-on: macos-14
+  webdriver:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
 
@@ -87,13 +91,50 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Install Linux WebDriver dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            librsvg2-dev \
+            xvfb
+
       - run: npm ci
-      - run: npm run test:e2e
+      - name: Run WebDriverIO E2E tests
+        id: e2e
+        continue-on-error: ${{ runner.os == 'Windows' }}
+        run: ${{ runner.os == 'Linux' && 'xvfb-run --auto-servernum npm run test:e2e' || 'npm run test:e2e' }}
 
       - name: Upload WebdriverIO logs
-        if: failure()
+        if: ${{ failure() || steps.e2e.outcome == 'failure' }}
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: webdriverio-macos-logs
+          name: webdriverio-${{ matrix.os }}-logs
           path: logs
           if-no-files-found: ignore
+
+      - name: Check WebDriverIO result
+        if: always()
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.e2e.outcome }}
+        run: |
+          case "$OUTCOME" in
+            success) echo "WebDriverIO E2E: success" ;;
+            failure)
+              if [ "$RUNNER_OS" = "Windows" ]; then
+                echo "::warning::Windows WebDriverIO E2E failure allowed: WebView2 150+ blocks remote debugging for elevated GitHub runners (https://github.com/webdriverio/desktop-mobile/issues/542)"
+              else
+                echo "::error::WebDriverIO E2E failed"
+                exit 1
+              fi ;;
+            *)
+              echo "::error::Unexpected WebDriverIO E2E outcome: $OUTCOME"
+              exit 1 ;;
+          esac

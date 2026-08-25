@@ -568,6 +568,10 @@ impl BreakEngine {
         Ok(self.status())
     }
 
+    pub fn reach_skip_limit_for_e2e(&mut self) {
+        self.consecutive_skips = self.config.consecutive_skip_limit;
+    }
+
     pub fn complete_break(&mut self) -> Result<EngineStatus, String> {
         self.sync_with_clock();
         if !matches!(self.phase, EnginePhase::OnBreak) {

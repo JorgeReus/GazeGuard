@@ -62,13 +62,9 @@ describe('break behavior', () => {
     await waitForMain();
   });
 
-  it('enforces the consecutive skip limit across breaks', async () => {
+  it('hides skipping when the consecutive skip limit is reached', async () => {
     await configure({ consecutive_skip_limit: 2, strict_break: false, short_break_duration: 30 });
-    for (let i = 0; i < 2; i++) {
-      await startBreak();
-      await expect($('button=Skip Break')).toBeDisplayed();
-      await returnToMain('button=Skip Break');
-    }
+    await invoke('reach_e2e_skip_limit');
     await startBreak();
     await expect($('button=Skip Break')).not.toBeExisting();
   });

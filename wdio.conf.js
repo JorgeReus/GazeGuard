@@ -1,5 +1,13 @@
 import path from 'node:path';
 
+process.env.GAZEGUARD_E2E ??= '1';
+
+const appBinaryPath = path.resolve(
+  'src-tauri/target/debug',
+  process.platform === 'win32' ? 'gazeguard.exe' : 'gazeguard',
+);
+const driverProvider = process.platform === 'win32' ? 'external' : 'embedded';
+
 export const config = {
   runner: 'local',
   specs: ['./tests/e2e/all.e2e.js'],
@@ -9,13 +17,14 @@ export const config = {
   framework: 'mocha',
   reporters: ['spec'],
   services: [[ '@wdio/tauri-service', {
-    driverProvider: 'embedded',
-    appBinaryPath: path.resolve('src-tauri/target/debug/gazeguard'),
+    driverProvider,
+    autoInstallTauriDriver: driverProvider === 'external',
+    appBinaryPath,
     captureBackendLogs: true,
     captureFrontendLogs: true,
   }]],
   capabilities: [{ maxInstances: 1, browserName: 'tauri', 'tauri:options': {
-    application: path.resolve('src-tauri/target/debug/gazeguard'),
+    application: appBinaryPath,
   }}],
   mochaOpts: { ui: 'bdd', timeout: 120000 },
   connectionRetryTimeout: 120000,
