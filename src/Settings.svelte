@@ -14,6 +14,7 @@
   let soundEnabled = false;
   let settings: Record<string, any> = {};
   const isAndroid = /Android/i.test(navigator.userAgent);
+  const isFullscreenPauseSupported = /Macintosh|Windows/i.test(navigator.userAgent);
   const colorScheme = matchMedia('(prefers-color-scheme: dark)');
   const warningSound = new Audio('/sounds/on_pre_break.wav');
 
@@ -162,9 +163,10 @@
       <label class="row">Strict breaks<input class="toggle" type="checkbox" checked={settings.strict_break === true} onchange={(event) => updateSetting('strict_break', (event.currentTarget as HTMLInputElement).checked)} aria-label="Strict breaks"></label>
       <label class="row">Log level<select value={settings.log_level ?? 'info'} onchange={(event) => updateSetting('log_level', (event.currentTarget as HTMLSelectElement).value)} aria-label="Log level"><option value="off">Off</option><option value="error">Error</option><option value="warn">Warn</option><option value="info">Info</option><option value="debug">Debug</option><option value="trace">Trace</option></select></label>
       {#each behaviorToggles as [label, key]}
-        <label class="row" title={key === 'pause_during_fullscreen' ? 'Coming soon' : undefined}>
-          {label}{key === 'pause_during_fullscreen' ? ' (Coming soon)' : ''}
-          <input class="toggle" type="checkbox" checked={settings[key] === true} disabled={key === 'pause_during_fullscreen'} onchange={(event) => updateSetting(key, (event.currentTarget as HTMLInputElement).checked)} aria-label={label}>
+        <label class="row">
+          {label}
+          <input class="toggle" type="checkbox" checked={settings[key] === true} disabled={key === 'pause_during_fullscreen' && !isFullscreenPauseSupported} onchange={(event) => updateSetting(key, (event.currentTarget as HTMLInputElement).checked)} aria-label={label}>
+          {#if key === 'pause_during_fullscreen' && !isFullscreenPauseSupported}<span class="hint" data-testid="fullscreen-pause-hint">macOS and Windows only</span>{/if}
         </label>
       {/each}
     </section>

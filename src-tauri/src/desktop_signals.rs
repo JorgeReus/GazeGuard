@@ -149,7 +149,7 @@ fn linux_idle_from_sources(
     native_idle_active: Option<bool>,
 ) -> DesktopSignals {
     DesktopSignals {
-        fullscreen_active: fallback.fullscreen_active,
+        fullscreen_active: false,
         idle_active: native_idle_active.unwrap_or(fallback.idle_active),
     }
 }
@@ -190,7 +190,7 @@ fn windows_signals_from_sources(
     native_fullscreen_active: Option<bool>,
 ) -> DesktopSignals {
     DesktopSignals {
-        fullscreen_active: native_fullscreen_active.unwrap_or(fallback.fullscreen_active),
+        fullscreen_active: native_fullscreen_active.unwrap_or(false),
         idle_active: native_idle_active.unwrap_or(fallback.idle_active),
     }
 }
@@ -226,10 +226,7 @@ fn windows_signals_from_sources_logged(
         None => log_desktop_signals(
             LogLevel::Trace,
             configured_level,
-            format_args!(
-                "native_fullscreen_result unavailable; falling back to window fullscreen_active={}",
-                fallback.fullscreen_active
-            ),
+            format_args!("native_fullscreen_result unavailable; treating fullscreen_active=false"),
         ),
     }
 
@@ -253,12 +250,18 @@ fn screen_rect_covers_monitor(window: ScreenRect, monitor: ScreenRect) -> bool {
 fn windows_other_app_fullscreen_from_bounds(
     foreground_window: Option<isize>,
     app_window: Option<isize>,
+    foreground_process_id: Option<u32>,
+    app_process_id: Option<u32>,
     foreground_bounds: Option<ScreenRect>,
     monitor_bounds: Option<ScreenRect>,
 ) -> Option<bool> {
     let foreground_window = foreground_window?;
 
     if app_window.is_some_and(|app_window| app_window == foreground_window) {
+        return Some(false);
+    }
+
+    if foreground_process_id.is_some() && foreground_process_id == app_process_id {
         return Some(false);
     }
 
@@ -276,7 +279,7 @@ fn macos_signals_from_sources(
     native_fullscreen_active: Option<bool>,
 ) -> DesktopSignals {
     DesktopSignals {
-        fullscreen_active: native_fullscreen_active.unwrap_or(fallback.fullscreen_active),
+        fullscreen_active: native_fullscreen_active.unwrap_or(false),
         idle_active: native_idle_active.unwrap_or(fallback.idle_active),
     }
 }
@@ -312,10 +315,7 @@ fn macos_signals_from_sources_logged(
         None => log_desktop_signals(
             LogLevel::Trace,
             configured_level,
-            format_args!(
-                "native_fullscreen_result unavailable; falling back to window fullscreen_active={}",
-                fallback.fullscreen_active
-            ),
+            format_args!("native_fullscreen_result unavailable; treating fullscreen_active=false"),
         ),
     }
 
@@ -342,8 +342,11 @@ fn macos_other_app_fullscreen_from_bounds(
     }
 
     let frontmost_bounds = frontmost_bounds?;
-    let screen_bounds = screen_bounds?;
-    Some(screen_rect_covers_monitor(frontmost_bounds, screen_bounds))
+    let visible_screen_bounds = screen_bounds?;
+    Some(screen_rect_covers_monitor(
+        frontmost_bounds,
+        visible_screen_bounds,
+    ))
 }
 
 #[cfg(all(desktop, target_os = "linux"))]
@@ -436,6 +439,8 @@ mod platform {
         static kCGWindowOwnerPID: CFStringRef;
 
         fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> CFArrayRef;
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
         fn CGRectMakeWithDictionaryRepresentation(
             dictionary: CFDictionaryRef,
             rect: *mut CGRect,
@@ -504,6 +509,19 @@ mod platform {
             ),
         );
         Some(idle_active)
+    }
+
+    fn request_screen_capture_access(configured_level: LogLevel) {
+        if unsafe { CGPreflightScreenCaptureAccess() } {
+            return;
+        }
+
+        let granted = unsafe { CGRequestScreenCaptureAccess() };
+        log_desktop_signals(
+            LogLevel::Info,
+            configured_level,
+            format_args!("screen_capture_access_granted={granted}"),
+        );
     }
 
     fn frontmost_application_pid() -> Option<i32> {
@@ -575,15 +593,25 @@ mod platform {
                 continue;
             }
 
-            result = Some(NativeWindowInfo {
+            let candidate = NativeWindowInfo {
                 window_number: window_number as usize,
                 bounds,
-            });
-            break;
+            };
+
+            if result
+                .as_ref()
+                .is_none_or(|current: &NativeWindowInfo| window_area(candidate.bounds) > window_area(current.bounds))
+            {
+                result = Some(candidate);
+            }
         }
 
         unsafe { CFRelease(window_list) };
         result
+    }
+
+    fn window_area(bounds: ScreenRect) -> i64 {
+        i64::from(bounds.right - bounds.left) * i64::from(bounds.bottom - bounds.top)
     }
 
     fn dictionary_value(dictionary: CFDictionaryRef, key: CFStringRef) -> Option<*const c_void> {
@@ -659,6 +687,34 @@ mod platform {
         best_match
     }
 
+    fn visible_screen_bounds_for_window(
+        app: &tauri::AppHandle,
+        window_bounds: ScreenRect,
+    ) -> Option<ScreenRect> {
+        app.available_monitors()
+            .ok()?
+            .into_iter()
+            .filter_map(|monitor| {
+                let work_area = monitor.work_area();
+                let scale_factor = monitor.scale_factor();
+                let left = (f64::from(work_area.position.x) / scale_factor).round() as i32;
+                let top = (f64::from(work_area.position.y) / scale_factor).round() as i32;
+                let width = (f64::from(work_area.size.width) / scale_factor).round() as i32;
+                let height = (f64::from(work_area.size.height) / scale_factor).round() as i32;
+                let right = left.checked_add(width)?;
+                let bottom = top.checked_add(height)?;
+                let bounds = ScreenRect {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                };
+                Some((intersection_area(window_bounds, bounds), bounds))
+            })
+            .max_by_key(|(overlap, _)| *overlap)
+            .and_then(|(overlap, bounds)| (overlap > 0).then_some(bounds))
+    }
+
     fn intersection_area(first: ScreenRect, second: ScreenRect) -> i64 {
         let width = (first.right.min(second.right) - first.left.max(second.left)).max(0) as i64;
         let height = (first.bottom.min(second.bottom) - first.top.max(second.top)).max(0) as i64;
@@ -684,12 +740,13 @@ mod platform {
 
             let frontmost_window = frontmost_window_info(frontmost_pid)?;
             let screen_bounds = screen_bounds_for_window(frontmost_window.bounds)?;
+            let visible_screen_bounds = visible_screen_bounds_for_window(app, frontmost_window.bounds)?;
             let app_window = app_window_number(app);
             let native_fullscreen_active = macos_other_app_fullscreen_from_bounds(
                 Some(frontmost_window.window_number),
                 app_window,
                 Some(frontmost_window.bounds),
-                Some(screen_bounds),
+                Some(visible_screen_bounds),
             );
 
             if let Some(native_fullscreen_active) = native_fullscreen_active {
@@ -697,10 +754,11 @@ mod platform {
                     LogLevel::Debug,
                     configured_level,
                     format_args!(
-                        "native_fullscreen_sample frontmost_pid={frontmost_pid} frontmost_window={} app_window={app_window:?} frontmost_bounds={:?} screen_bounds={:?} native_fullscreen_result={native_fullscreen_active}",
+                        "native_fullscreen_sample frontmost_pid={frontmost_pid} frontmost_window={} app_window={app_window:?} frontmost_bounds={:?} screen_bounds={:?} visible_screen_bounds={:?} native_fullscreen_result={native_fullscreen_active}",
                         frontmost_window.window_number,
                         frontmost_window.bounds,
                         screen_bounds,
+                        visible_screen_bounds,
                     ),
                 );
             }
@@ -718,10 +776,11 @@ mod platform {
         ) -> DesktopSignals {
             let fallback = desktop_signals_from_desktop_window(app, configured_level);
             let _ = idle_threshold_seconds;
+            request_screen_capture_access(configured_level);
             macos_signals_from_sources_logged(
                 fallback,
                 native_idle_active(configured_level),
-                None,
+                native_fullscreen_active(app, configured_level),
                 configured_level,
             )
         }
@@ -744,7 +803,7 @@ mod platform {
     use windows_sys::Win32::System::SystemInformation::GetTickCount;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowRect, IsIconic, IsWindowVisible,
+        GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
     };
 
     pub(super) struct PlatformDesktopSignalProvider;
@@ -847,9 +906,16 @@ mod platform {
             return None;
         }
 
+        let mut foreground_process_id = 0;
+        if unsafe { GetWindowThreadProcessId(foreground_window, &mut foreground_process_id) } == 0 {
+            return None;
+        }
+
         windows_other_app_fullscreen_from_bounds(
             Some(foreground_window as isize),
             main_window_handle(app),
+            Some(foreground_process_id),
+            Some(std::process::id()),
             window_bounds(foreground_window),
             monitor_bounds(monitor),
         )
@@ -1060,7 +1126,8 @@ mod tests {
 
         let signals = linux_idle_from_sources(fallback, None);
 
-        assert_eq!(signals, fallback);
+        assert_eq!(signals.fullscreen_active, false);
+        assert_eq!(signals.idle_active, fallback.idle_active);
     }
 
     #[test]
@@ -1139,7 +1206,13 @@ mod tests {
             idle_active: false,
         };
 
-        assert_eq!(windows_signals_from_sources(fallback, None, None), fallback);
+        assert_eq!(
+            windows_signals_from_sources(fallback, None, None),
+            DesktopSignals {
+                fullscreen_active: false,
+                idle_active: false,
+            }
+        );
     }
 
     #[test]
@@ -1167,7 +1240,13 @@ mod tests {
             idle_active: false,
         };
 
-        assert_eq!(macos_signals_from_sources(fallback, None, None), fallback);
+        assert_eq!(
+            macos_signals_from_sources(fallback, None, None),
+            DesktopSignals {
+                fullscreen_active: false,
+                idle_active: false,
+            }
+        );
     }
 
     #[test]
@@ -1182,7 +1261,36 @@ mod tests {
         });
 
         assert_eq!(
-            windows_other_app_fullscreen_from_bounds(foreground, app, bounds, bounds),
+            windows_other_app_fullscreen_from_bounds(
+                foreground,
+                app,
+                Some(123),
+                Some(456),
+                bounds,
+                bounds,
+            ),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn windows_fullscreen_helper_rejects_non_main_window_owned_by_app_process() {
+        let bounds = Some(ScreenRect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        });
+
+        assert_eq!(
+            windows_other_app_fullscreen_from_bounds(
+                Some(20),
+                Some(10),
+                Some(123),
+                Some(123),
+                bounds,
+                bounds,
+            ),
             Some(false)
         );
     }
@@ -1219,6 +1327,32 @@ mod tests {
 
         assert_eq!(
             macos_other_app_fullscreen_from_bounds(Some(99), Some(42), Some(window), Some(screen)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn macos_fullscreen_helper_accepts_window_below_menu_bar() {
+        let visible_screen = ScreenRect {
+            left: 0,
+            top: 33,
+            right: 1512,
+            bottom: 982,
+        };
+        let window = ScreenRect {
+            left: 0,
+            top: 33,
+            right: 1512,
+            bottom: 982,
+        };
+
+        assert_eq!(
+            macos_other_app_fullscreen_from_bounds(
+                Some(99),
+                Some(42),
+                Some(window),
+                Some(visible_screen),
+            ),
             Some(true)
         );
     }
@@ -1263,6 +1397,8 @@ mod tests {
             windows_other_app_fullscreen_from_bounds(
                 Some(20),
                 Some(10),
+                Some(20),
+                Some(10),
                 Some(foreground),
                 Some(monitor),
             ),
@@ -1287,6 +1423,8 @@ mod tests {
 
         assert_eq!(
             windows_other_app_fullscreen_from_bounds(
+                Some(20),
+                Some(10),
                 Some(20),
                 Some(10),
                 Some(foreground),

@@ -684,7 +684,7 @@ impl BreakEngine {
         let idle_threshold_seconds = self.config.idle_time.saturating_mul(60);
         if self.idle_active && self.idle_elapsed_seconds >= idle_threshold_seconds {
             Some("idle")
-        } else if self.fullscreen {
+        } else if self.config.pause_during_fullscreen && self.fullscreen {
             Some("fullscreen")
         } else {
             None
@@ -747,6 +747,13 @@ impl BreakEngine {
 
     fn advance_by_seconds(&mut self, mut seconds: u64) {
         while seconds > 0 {
+            if self.config.pause_during_fullscreen
+                && self.fullscreen
+                && matches!(self.phase, EnginePhase::Running | EnginePhase::Warning)
+            {
+                break;
+            }
+
             match self.phase {
                 EnginePhase::Stopped => break,
                 EnginePhase::Disabled => {
@@ -2256,6 +2263,49 @@ consecutive_skip_limit: 2
         let status = engine.advance_by(warning_seconds);
         assert!(matches!(status.phase, EnginePhase::OnBreak));
         assert!(status.current_break.is_some());
+    }
+
+    #[test]
+    fn fullscreen_freezes_running_countdown_and_resumes_after_exit() {
+        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        engine.start();
+        let before = engine.status().seconds_remaining.unwrap();
+
+        engine.set_fullscreen(true);
+        assert_eq!(engine.advance_by(7).seconds_remaining, Some(before));
+
+        engine.set_fullscreen(false);
+        assert_eq!(engine.advance_by(7).seconds_remaining, Some(before - 7));
+    }
+
+    #[test]
+    fn fullscreen_freezes_warning_countdown_and_resumes_after_exit() {
+        let mut engine = BreakEngine::new(BreakEngineConfig::load());
+        engine.start();
+        let warning_seconds = engine.config.pre_break_warning_time;
+        engine.advance_by(engine.config.break_interval * 60 - warning_seconds);
+
+        engine.set_fullscreen(true);
+        assert_eq!(engine.advance_by(4).seconds_remaining, Some(warning_seconds));
+
+        engine.set_fullscreen(false);
+        assert_eq!(engine.advance_by(4).seconds_remaining, Some(warning_seconds - 4));
+    }
+
+    #[test]
+    fn fullscreen_does_not_freeze_when_setting_disabled() {
+        let mut config = BreakEngineConfig::load();
+        config.pause_during_fullscreen = false;
+        let mut engine = BreakEngine::new(config);
+        engine.start();
+        let warning_seconds = engine.config.pre_break_warning_time;
+
+        engine.set_fullscreen(true);
+        let status = engine.advance_by(engine.config.break_interval * 60 - warning_seconds);
+        assert!(matches!(status.phase, EnginePhase::Warning));
+        assert_eq!(status.seconds_remaining, Some(warning_seconds));
+
+        assert_eq!(engine.advance_by(4).seconds_remaining, Some(warning_seconds - 4));
     }
 
     #[test]
