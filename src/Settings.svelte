@@ -11,6 +11,7 @@
   let theme: Theme = 'system';
   let status = 'Ready';
   let error = '';
+  let availableUpdate: Awaited<ReturnType<typeof check>> = null;
   let soundEnabled = false;
   let settings: Record<string, any> = {};
   const isAndroid = /Android/i.test(navigator.userAgent);
@@ -25,10 +26,18 @@
     try {
       const update = await check();
       if (!update) { status = 'Up to date'; return; }
-      if (!window.confirm(`GazeGuard ${update.version} is available. Install now?`)) {
-        status = `Update available: ${update.version}`;
-        return;
-      }
+      availableUpdate = update;
+    } catch (e) {
+      error = `Update failed: ${String(e)}`;
+      status = 'Update unavailable';
+    }
+  }
+
+  async function installUpdate() {
+    const update = availableUpdate;
+    if (!update) return;
+    availableUpdate = null;
+    try {
       status = `Installing ${update.version}`;
       await update.downloadAndInstall();
       await relaunch();
@@ -36,6 +45,11 @@
       error = `Update failed: ${String(e)}`;
       status = 'Update unavailable';
     }
+  }
+
+  function deferUpdate() {
+    if (availableUpdate) status = `Update available: ${availableUpdate.version}`;
+    availableUpdate = null;
   }
 
   const toggles = [
@@ -176,3 +190,15 @@
   </main>
   <footer><div class="status"><span class="dot"></span>Status: {status}</div><div class="actions"><button onclick={testBreak}>Test Break</button><button class="primary" onclick={saveSettings}>Save Settings</button></div></footer>
 </div>
+{#if availableUpdate}
+  <div class="modal-backdrop" role="presentation">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="update-title">
+      <h2 id="update-title">Update available</h2>
+      <p>GazeGuard {availableUpdate.version} is ready to install.</p>
+      <div class="actions">
+        <button onclick={deferUpdate}>Later</button>
+        <button class="primary" onclick={installUpdate}>Install update</button>
+      </div>
+    </div>
+  </div>
+{/if}
