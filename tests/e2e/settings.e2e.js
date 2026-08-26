@@ -40,8 +40,24 @@ describe('settings', () => {
     await expect(await $('[aria-label="Postpone durations"]')).toHaveValue('1, 2');
   });
 
-  it('keeps fullscreen pause disabled until implemented', async () => {
+  it('shows fullscreen pause availability and persists supported settings', async () => {
     await browser.tauri.switchWindow('main');
-    await expect(await input('Pause during fullscreen')).toBeDisabled();
+    const userAgent = await browser.execute(() => navigator.userAgent);
+    const control = await input('Pause during fullscreen');
+
+    if (/Macintosh|Windows/i.test(userAgent)) {
+      await expect(control).not.toBeDisabled();
+      const initial = await control.isSelected();
+      await control.click();
+      await $('button=Save Settings').click();
+      await browser.refresh();
+      await expect(await input('Pause during fullscreen')).toBeSelected(!initial);
+
+      await (await input('Pause during fullscreen')).click();
+      await $('button=Save Settings').click();
+    } else {
+      await expect(control).toBeDisabled();
+      await expect($('[data-testid="fullscreen-pause-hint"]')).toHaveText('macOS and Windows only');
+    }
   });
 });

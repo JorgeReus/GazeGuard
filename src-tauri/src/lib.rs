@@ -708,8 +708,8 @@ fn refresh_desktop_signals(app: &tauri::AppHandle, engine: &SharedBreakEngine) {
             configured_log_level,
             "desktop_signals",
             format_args!(
-                "rust_updater_applied_signals={signals:?} phase={:?}",
-                status.phase
+                "rust_updater_applied_signals={signals:?} phase={:?} seconds_remaining={:?}",
+                status.phase, status.seconds_remaining
             ),
         );
     }
