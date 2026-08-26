@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/JorgeReus/GazeGuard/compare/v0.7.0...v0.7.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* install updates automatically ([75ef1b9](https://github.com/JorgeReus/GazeGuard/commit/75ef1b940c449263c931a8d396586735c516a3d1))
+
 ## [0.7.0](https://github.com/JorgeReus/GazeGuard/compare/v0.6.2...v0.7.0) (2026-08-26)
 
 
