@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/JorgeReus/GazeGuard/compare/v0.6.2...v0.7.0) (2026-08-26)
+
+
+### Features
+
+* keep app running when window closes ([a9bd848](https://github.com/JorgeReus/GazeGuard/commit/a9bd848899c24c0de8046183740532f859336c03))
+* pause timers during fullscreen ([9ee73cc](https://github.com/JorgeReus/GazeGuard/commit/9ee73cc28784e96cc0c8695a481c5898550d72bd))
+
 ## [0.6.2](https://github.com/JorgeReus/GazeGuard/compare/v0.6.1...v0.6.2) (2026-08-24)
 
 
