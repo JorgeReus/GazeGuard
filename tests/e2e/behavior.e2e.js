@@ -91,6 +91,34 @@ describe('break behavior', () => {
     await expect($('button=Skip Break')).not.toBeExisting();
   });
 
+  it('freezes the countdown while fullscreen pausing is enabled', async () => {
+    await configure({ pause_during_fullscreen: true, pause_when_idle: false });
+    const before = (await invoke('get_engine_status')).seconds_remaining;
+    await invoke('set_fullscreen_active', { active: true });
+
+    await expect((await invoke('advance_e2e_engine', { seconds: 10 })).seconds_remaining)
+      .toBe(before);
+  });
+
+  it('resumes the countdown after fullscreen ends', async () => {
+    await configure({ pause_during_fullscreen: true, pause_when_idle: false });
+    const before = (await invoke('get_engine_status')).seconds_remaining;
+    await invoke('set_fullscreen_active', { active: true });
+    await invoke('set_fullscreen_active', { active: false });
+
+    await expect((await invoke('advance_e2e_engine', { seconds: 10 })).seconds_remaining)
+      .toBe(before - 10);
+  });
+
+  it('keeps counting when fullscreen pausing is disabled', async () => {
+    await configure({ pause_during_fullscreen: false, pause_when_idle: false });
+    const before = (await invoke('get_engine_status')).seconds_remaining;
+    await invoke('set_fullscreen_active', { active: true });
+
+    await expect((await invoke('advance_e2e_engine', { seconds: 10 })).seconds_remaining)
+      .toBe(before - 10);
+  });
+
   it('removes postpone buttons when no options exist', async () => {
     await configure({ strict_break: false, allow_postpone: true, postpone_options: [], short_break_duration: 30 });
     await startBreak();
