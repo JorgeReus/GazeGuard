@@ -1116,6 +1116,20 @@ fn reset_e2e_engine(
 }
 
 #[tauri::command]
+fn advance_e2e_engine(
+    seconds: u64,
+    state: State<'_, SharedBreakEngine>,
+) -> Result<EngineStatus, String> {
+    if std::env::var_os("GAZEGUARD_E2E").is_none() {
+        return Err("E2E engine advancement is disabled.".to_string());
+    }
+    Ok(state
+        .lock()
+        .map_err(|_| "State lock poisoned")?
+        .restore_elapsed(seconds))
+}
+
+#[tauri::command]
 fn e2e_break_window_exists(app: tauri::AppHandle) -> Result<bool, String> {
     if std::env::var_os("GAZEGUARD_E2E").is_none() {
         return Err("E2E window state is disabled.".to_string());
@@ -1397,6 +1411,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             show_break_window,
             reset_e2e_engine,
+            advance_e2e_engine,
             e2e_break_window_exists,
             reach_e2e_skip_limit,
             close_break_window,

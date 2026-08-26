@@ -51,9 +51,14 @@ describe('settings', () => {
       await control.click();
       await $('button=Save Settings').click();
       await browser.refresh();
-      await expect(await input('Pause during fullscreen')).toBeSelected(!initial);
+      const persisted = await input('Pause during fullscreen');
+      if (initial) {
+        await expect(persisted).not.toBeSelected();
+      } else {
+        await expect(persisted).toBeSelected();
+      }
 
-      await (await input('Pause during fullscreen')).click();
+      await persisted.click();
       await $('button=Save Settings').click();
     } else {
       await expect(control).toBeDisabled();
