@@ -108,6 +108,7 @@ Durations for short breaks and pre-break warnings are in seconds. Break interval
 
 - Node.js and npm
 - Rust stable and Cargo
+- cargo-nextest
 - Tauri CLI 2.10.1
 - Java 21 and Android SDK platform 36 for Android builds
 - macOS with Xcode command-line tools for macOS builds
@@ -135,7 +136,7 @@ Run Rust tests:
 
 ```bash
 cd src-tauri
-cargo test
+cargo nextest run
 ```
 
 Run the macOS-compatible WebdriverIO end-to-end suite:

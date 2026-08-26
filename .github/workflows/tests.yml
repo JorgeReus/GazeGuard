@@ -20,6 +20,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - uses: taiki-e/install-action@nextest
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -33,7 +34,7 @@ jobs:
             librsvg2-dev
       - name: Run Rust tests
         working-directory: src-tauri
-        run: cargo test
+        run: cargo nextest run
 
   android:
     runs-on: ubuntu-latest

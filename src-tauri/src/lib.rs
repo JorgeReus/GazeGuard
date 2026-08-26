@@ -40,6 +40,7 @@ use tauri_plugin_updater::Builder as UpdaterBuilder;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
+    WindowEvent,
 };
 
 type SharedBreakEngine = Arc<Mutex<BreakEngine>>;
@@ -1333,6 +1334,16 @@ pub fn run() {
 
             #[cfg(desktop)]
             {
+                if let Some(window) = app.get_webview_window("main") {
+                    let close_window = window.clone();
+                    window.on_window_event(move |event| {
+                        if let WindowEvent::CloseRequested { api, .. } = event {
+                            api.prevent_close();
+                            let _ = close_window.hide();
+                        }
+                    });
+                }
+
                 let config_path = runtime_config_path(app_data_dir.as_path()).map_err(|error| {
                     tauri::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, error))
                 })?;
