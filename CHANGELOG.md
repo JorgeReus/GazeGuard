@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/JorgeReus/GazeGuard/compare/v0.7.1...v0.7.2) (2026-08-27)
+
+
+### Bug Fixes
+
+* added windows binary ([7658924](https://github.com/JorgeReus/GazeGuard/commit/76589248f2ca25a7d4a5bd6d41dc84ec845d91e6))
+
 ## [0.7.1](https://github.com/JorgeReus/GazeGuard/compare/v0.7.0...v0.7.1) (2026-08-26)
 
 
