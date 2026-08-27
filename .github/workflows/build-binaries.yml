@@ -112,6 +112,36 @@ jobs:
           args: '--target universal-apple-darwin --bundles app,dmg --ci'
           uploadWorkflowArtifacts: true
 
+  windows:
+    needs: prepare-release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+      - run: npm run build
+
+      - uses: tauri-apps/tauri-action@v1
+        with:
+          projectPath: src-tauri
+          releaseId: ${{ needs.prepare-release.outputs.release-id }}
+          tagName: ${{ github.ref_name }}
+          args: '--bundles nsis,msi --ci'
+          uploadWorkflowArtifacts: true
+
   linux:
     needs: prepare-release
     runs-on: ubuntu-22.04
@@ -160,7 +190,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [prepare-release, android, macos, linux]
+    needs: [prepare-release, android, macos, windows, linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
