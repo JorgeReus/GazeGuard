@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/JorgeReus/GazeGuard/compare/v0.7.2...v0.7.3) (2026-08-28)
+
+
+### Bug Fixes
+
+* **ci:** added tauri secrets ([5dbaa50](https://github.com/JorgeReus/GazeGuard/commit/5dbaa50cdc3f698a6f900350fabd52a83f226ab1))
+
 ## [0.7.2](https://github.com/JorgeReus/GazeGuard/compare/v0.7.1...v0.7.2) (2026-08-27)
 
 
